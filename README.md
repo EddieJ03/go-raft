@@ -12,3 +12,6 @@ Run `go build main.go`, which creates `main.exe`
 ## Running 
 Run `./main --id <number>` to start a node
 - main by default uses `config.yaml`
+
+## Tests
+Run `go test ./tests -count=1`
