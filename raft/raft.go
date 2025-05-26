@@ -26,6 +26,7 @@ const (
 	defaultHeartbeatInterval  = 1000 // default heartbeat every second
 	defaultElectionTimeoutMin = 1500 // miniMum election timeout in milliseconds
 	defaultElectionTimeoutMax = 3000 // maxiMum election timeout in milliseconds
+	DefaultRPCTimeout		 = 1 // default RPC timeout in seconds
 )
 
 type RaftNode struct {
@@ -172,7 +173,7 @@ func (rn *RaftNode) startElection() {
 
 	for pid, client := range rn.grpcClients {
 		go func(pid int32, client pb.RaftClient) {
-			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout*time.Second)
 			defer cancel()
 
 			req := &pb.RequestVoteRequest{
@@ -233,7 +234,7 @@ func (rn *RaftNode) sendHeartbeats() {
 
 			for pid, client := range rn.grpcClients {
 				go func(pid int32, client pb.RaftClient) {
-					ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+					ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout*time.Second)
 					defer cancel()
 					_, _ = client.AppendEntries(ctx, &pb.AppendEntriesRequest{Term: term})
 				}(pid, client)

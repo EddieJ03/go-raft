@@ -3,10 +3,11 @@ package utils
 import (
 	"log"
 	"net"
+	"time"
 
 	"github.com/EddieJ03/223b-raft/raft"
-	"google.golang.org/grpc"
 	pb "github.com/EddieJ03/223b-raft/raft/github.com/EddieJ03/223b-raft"
+	"google.golang.org/grpc"
 )
 
 
@@ -29,6 +30,7 @@ func ServeBackend(nodeID int32, peers map[int32]string, shutdown chan struct{}, 
 
 	go func() {
 		<-shutdown
+        time.Sleep(2 * raft.DefaultRPCTimeout * time.Second) // wait for ongoing RPCs to finish
 		rn.CleanResources()
 		grpcServer.GracefulStop()
 	}()
