@@ -124,6 +124,7 @@ func getHeartbeatInterval() time.Duration {
 			return time.Duration(interval) * time.Millisecond
 		}
 	}
+
 	return defaultHeartbeatInterval * time.Millisecond
 }
 
@@ -136,6 +137,7 @@ func getElectionTimeout() time.Duration {
 			minTimeout = timeout
 		}
 	}
+
 	if val := os.Getenv("RAFT_ELECTION_TIMEOUT_MAX"); val != "" {
 		if timeout, err := strconv.Atoi(val); err == nil {
 			maxTimeout = timeout
@@ -197,7 +199,7 @@ func (rn *RaftNode) startElection() {
 				return
 			}
 
-			if rn.State != CandIdate || rn.CurrentTerm != req.Term { // request term becomes invalId
+			if rn.State != CandIdate || rn.CurrentTerm != req.Term { // request term becomes invalid
 				return
 			}
 

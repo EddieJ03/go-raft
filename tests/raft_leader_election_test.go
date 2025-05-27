@@ -114,7 +114,7 @@ func waitForStableLeader(statusChan chan []TestNodeStatus, timeout time.Duration
 	}
 }
 
-// Test if leadership can be established within 10 seconds 
+// Test if leadership can be established within 10 seconds, no failures 
 func TestLeaderElection(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
@@ -194,7 +194,11 @@ func TestLeaderFailElection(t *testing.T) {
 	// wait for shutdown
 	time.Sleep(2 * raft.DefaultRPCTimeout * time.Second)
 
-	if leader := waitForStableLeader(statusUpdates, 10*time.Second); leader == -1 || leader == previousLeader {
+	newStatusChan := make(chan struct{})
+	nodes[previousLeader] = nil
+	newStatusUpdates := checkAllStatus(nodes, 100*time.Millisecond, newStatusChan)
+
+	if leader := waitForStableLeader(newStatusUpdates, 10*time.Second); leader == -1 || leader == previousLeader {
 		t.Errorf("FAILURE: no leader or previous leader is still active after shutdown %d", leader)
 	}
 
@@ -382,7 +386,7 @@ loop:
 	}
 }
 
-// Test to make sure follower failure does not cause an election change
+// Test to make sure 1 follower failure does not trigger an election change
 func TestFollowerFailure(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
@@ -445,4 +449,69 @@ func TestFollowerFailure(t *testing.T) {
 			close(nodes[i].Shutdown)
 		}
 	}
+}
+
+// Test if no leader can be elected after leader AND a follower fails
+func TestLeaderAndFollowerFailElection(t *testing.T) {
+	fmt.Println("Running:", t.Name())
+
+	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
+	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
+	os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "2000")
+
+	// test node configuration
+	peers := map[int32]string{
+		0: "localhost:50071",
+		1: "localhost:50072",
+		2: "localhost:50073",
+	}
+
+	nodes := make([]*raft.RaftNode, 3)
+
+	for i := range 3 {
+		shutdown := make(chan struct{})
+		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdown)
+		go utils.ServeBackend(int32(i), peers, shutdown, nodes[i])
+	}
+
+	// start status checking
+	statusChan := make(chan struct{})
+	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
+
+	var previousLeader int
+	if previousLeader = waitForStableLeader(statusUpdates, 10*time.Second); previousLeader == -1 {
+		t.Fatal("FAILURE: could not achieve stable leadership in 10 seconds")
+	}
+
+	fmt.Printf("Previous leader: %d\n", previousLeader)
+
+	// shutdown a follower
+	var followerToKill int
+	for i := range 3 {
+		if i != previousLeader {
+			followerToKill = i
+			break
+		}
+	}
+
+	close(nodes[followerToKill].Shutdown)
+
+	fmt.Printf("Follower killed: %d\n", followerToKill)
+
+	// shutdown the previous leader
+	close(nodes[previousLeader].Shutdown)
+
+	// see if we elect a new leader in 15 seconds
+	newStatusChan := make(chan struct{})
+	nodes[previousLeader] = nil
+	nodes[followerToKill] = nil
+	newStatusUpdates := checkAllStatus(nodes, 100*time.Millisecond, newStatusChan)
+
+	var newLeader int
+	if newLeader = waitForStableLeader(newStatusUpdates, 15*time.Second); newLeader != -1 {
+		t.Fatal("FAILURE: achieved stable leadership in 15 seconds")
+	}
+
+	close(statusChan)
+	close(newStatusChan)
 }
