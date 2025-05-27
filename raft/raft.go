@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"math/rand"
+	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,207 +17,240 @@ import (
 type State int
 
 const (
-    Follower  State = 0
-    Candidate State = 1
-    Leader    State = 2
+	Follower  State = 0
+	CandIdate State = 1
+	Leader    State = 2
 )
 
-const heartbeatTime = 1000 // heartbeat every second
+const (
+	defaultHeartbeatInterval  = 1000 // default heartbeat every second
+	defaultElectionTimeoutMin = 1500 // miniMum election timeout in milliseconds
+	defaultElectionTimeoutMax = 3000 // maxiMum election timeout in milliseconds
+	DefaultRPCTimeout		 = 1 // default RPC timeout in seconds
+)
 
 type RaftNode struct {
-    pb.UnimplementedRaftServer
+	pb.UnimplementedRaftServer
 
-    mu              sync.Mutex
-    id              int32
-    state           State
-    currentTerm     int32
-    votedFor        int32
-    peers           map[int32]string
-    voteCount       int
-    electionReset   time.Time
-    grpcClients     map[int32]pb.RaftClient
-    clientConns     map[int32]*grpc.ClientConn
-    shutdown        chan struct{}
+	Mu            sync.Mutex
+	Id            int32
+	State         State
+	CurrentTerm   int32
+	VotedFor      int32
+	peers         map[int32]string
+	VoteCount     int
+	electionReset time.Time
+	grpcClients   map[int32]pb.RaftClient
+	clientConns   map[int32]*grpc.ClientConn
+	Shutdown      chan struct{}
 }
 
-func NewRaftNode(id int32, peers map[int32]string, shutdown chan struct{}) *RaftNode {
-    clients := make(map[int32]pb.RaftClient)
-    clientConns := make(map[int32]*grpc.ClientConn)
+func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}) *RaftNode {
+	clients := make(map[int32]pb.RaftClient)
+	clientConns := make(map[int32]*grpc.ClientConn)
 
-    for pid, addr := range peers {
-        if pid == id {
-            continue
-        }
+	for pid, addr := range peers {
+		if pid == Id {
+			continue
+		}
 
-        conn, _ := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, _ := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 
-        clientConns[pid] = conn
+		clientConns[pid] = conn
 
-        clients[pid] = pb.NewRaftClient(conn)
-    }
+		clients[pid] = pb.NewRaftClient(conn)
+	}
 
-    rn := &RaftNode{
-        id:            id,
-        state:         Follower,
-        currentTerm:   0,
-        votedFor:      -1,
-        peers:         peers,
-        grpcClients:   clients,
-        electionReset: time.Now(),
-        clientConns:   clientConns,
-        shutdown:      shutdown,
-    }
+	rn := &RaftNode{
+		Id:            Id,
+		State:         Follower,
+		CurrentTerm:   0,
+		VotedFor:      -1,
+		peers:         peers,
+		grpcClients:   clients,
+		electionReset: time.Now(),
+		clientConns:   clientConns,
+		Shutdown:      Shutdown,
+	}
 
-    go rn.runElectionTimer()
-    return rn
+	go rn.runElectionTimer()
+	return rn
 }
 
 func (rn *RaftNode) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
-    rn.mu.Lock()
-    defer rn.mu.Unlock()
+	rn.Mu.Lock()
+	defer rn.Mu.Unlock()
 
-    if req.Term < rn.currentTerm {
-        return &pb.RequestVoteResponse{Term: rn.currentTerm, VoteGranted: false}, nil
-    }
+	if req.Term < rn.CurrentTerm {
+		return &pb.RequestVoteResponse{Term: rn.CurrentTerm, VoteGranted: false}, nil
+	}
 
-    if req.Term > rn.currentTerm {
-        rn.currentTerm = req.Term
-        rn.votedFor = -1
-        rn.state = Follower
-    }
+	if req.Term > rn.CurrentTerm {
+		rn.CurrentTerm = req.Term
+		rn.VotedFor = -1
+		rn.State = Follower
+	}
 
-    if rn.votedFor == -1 || rn.votedFor == req.CandidateId {
-        rn.votedFor = req.CandidateId
-        rn.electionReset = time.Now()
-        return &pb.RequestVoteResponse{Term: rn.currentTerm, VoteGranted: true}, nil
-    }
+	if rn.VotedFor == -1 || rn.VotedFor == req.CandidateId {
+		rn.VotedFor = req.CandidateId
+		rn.electionReset = time.Now()
+		return &pb.RequestVoteResponse{Term: rn.CurrentTerm, VoteGranted: true}, nil
+	}
 
-    return &pb.RequestVoteResponse{Term: rn.currentTerm, VoteGranted: false}, nil
+	return &pb.RequestVoteResponse{Term: rn.CurrentTerm, VoteGranted: false}, nil
 }
 
 func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
-    rn.mu.Lock()
-    defer rn.mu.Unlock()
+	rn.Mu.Lock()
+	defer rn.Mu.Unlock()
 
-    if req.Term < rn.currentTerm {
-        return &pb.AppendEntriesResponse{Term: rn.currentTerm, Success: false}, nil
-    }
+	if req.Term < rn.CurrentTerm {
+		return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
+	}
 
-    if req.Term > rn.currentTerm {
-        rn.currentTerm = req.Term
-        rn.votedFor = -1
-        rn.state = Follower
-    }
+	if req.Term > rn.CurrentTerm {
+		rn.CurrentTerm = req.Term
+		rn.VotedFor = -1
+		rn.State = Follower
+	}
 
-    rn.electionReset = time.Now()
-    return &pb.AppendEntriesResponse{Term: rn.currentTerm, Success: true}, nil
+	rn.electionReset = time.Now()
+	return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: true}, nil
+}
+
+func getHeartbeatInterval() time.Duration {
+	if val := os.Getenv("RAFT_HEARTBEAT_INTERVAL"); val != "" {
+		if interval, err := strconv.Atoi(val); err == nil {
+			return time.Duration(interval) * time.Millisecond
+		}
+	}
+	return defaultHeartbeatInterval * time.Millisecond
+}
+
+func getElectionTimeout() time.Duration {
+	minTimeout := defaultElectionTimeoutMin
+	maxTimeout := defaultElectionTimeoutMax
+
+	if val := os.Getenv("RAFT_ELECTION_TIMEOUT_MIN"); val != "" {
+		if timeout, err := strconv.Atoi(val); err == nil {
+			minTimeout = timeout
+		}
+	}
+	if val := os.Getenv("RAFT_ELECTION_TIMEOUT_MAX"); val != "" {
+		if timeout, err := strconv.Atoi(val); err == nil {
+			maxTimeout = timeout
+		}
+	}
+
+	return time.Duration(minTimeout+rand.Intn(maxTimeout-minTimeout)) * time.Millisecond
 }
 
 func (rn *RaftNode) runElectionTimer() {
-    for {
-        select {
-        case <-time.After(500 * time.Millisecond): // takes half a second
-            rn.mu.Lock()
+	for {
+		select {
+		case <-time.After(500 * time.Millisecond):
+			rn.Mu.Lock()
 
-            timeout := time.Duration(150+rand.Intn(150)) * time.Millisecond * 10 // ranges from 1.5 to 3 seconds
-            if rn.state != Leader && time.Since(rn.electionReset) >= timeout {
-                rn.startElection()
-            }
+			timeout := getElectionTimeout()
+			if rn.State != Leader && time.Since(rn.electionReset) >= timeout {
+				rn.startElection()
+			}
 
-            rn.mu.Unlock()
-        case <-rn.shutdown:
-            log.Printf("electiom timer stopped for node %d", rn.id)
-            return
-        }
-    }
+			rn.Mu.Unlock()
+		case <-rn.Shutdown:
+			log.Printf("election timer stopped for node %d", rn.Id)
+			return
+		}
+	}
 }
 
-
 func (rn *RaftNode) startElection() {
-    rn.state = Candidate
-    rn.currentTerm++
-    rn.votedFor = rn.id
-    rn.voteCount = 1
-    rn.electionReset = time.Now()
+	rn.State = CandIdate
+	rn.CurrentTerm++
+	rn.VotedFor = rn.Id
+	rn.VoteCount = 1
+	rn.electionReset = time.Now()
 
-    for pid, client := range rn.grpcClients {
-        go func(pid int32, client pb.RaftClient) {
-            ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-            defer cancel()
+	for pid, client := range rn.grpcClients {
+		go func(pid int32, client pb.RaftClient) {
+			ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout*time.Second)
+			defer cancel()
 
-            req := &pb.RequestVoteRequest{
-                Term:        rn.currentTerm,
-                CandidateId: rn.id,
-            }
+			req := &pb.RequestVoteRequest{
+				Term:        rn.CurrentTerm,
+				CandidateId: rn.Id,
+			}
 
-            resp, err := client.RequestVote(ctx, req)
-            if err != nil {
-                // log.Printf("can't request vote from %d: %v", pid, err)
-                return
-            }
+			resp, err := client.RequestVote(ctx, req)
+			if err != nil {
+				// log.Printf("can't request vote from %d: %v", pid, err)
+				return
+			}
 
-            rn.mu.Lock()
-            defer rn.mu.Unlock()
+			rn.Mu.Lock()
+			defer rn.Mu.Unlock()
 
-            if resp.Term > rn.currentTerm {
-                rn.currentTerm = resp.Term
-                rn.state = Follower
-                rn.votedFor = -1
-                return
-            }
+			if resp.Term > rn.CurrentTerm {
+				rn.CurrentTerm = resp.Term
+				rn.State = Follower
+				rn.VotedFor = -1
+				return
+			}
 
-            if rn.state != Candidate || rn.currentTerm != req.Term { // request term becomes invalid
-                return
-            }
+			if rn.State != CandIdate || rn.CurrentTerm != req.Term { // request term becomes invalId
+				return
+			}
 
-            if resp.VoteGranted {
-                rn.voteCount++
+			if resp.VoteGranted {
+				rn.VoteCount++
 
-                if rn.voteCount > len(rn.peers)/2 {
-                    rn.state = Leader
-                    log.Printf("Node %d became leader for term %d", rn.id, rn.currentTerm)
-                    go rn.sendHeartbeats()
-                }
-            }
-        }(pid, client)
-    }
+				if rn.VoteCount > len(rn.peers)/2 {
+					rn.State = Leader
+					log.Printf("Node %d became leader for term %d", rn.Id, rn.CurrentTerm)
+					go rn.sendHeartbeats()
+				}
+			}
+		}(pid, client)
+	}
 }
 
 func (rn *RaftNode) sendHeartbeats() {
-    for {
-        select {
-        case <-rn.shutdown:
-            log.Printf("Heartbeat stopped for node %d", rn.id)
-            return
-        default:
-            rn.mu.Lock()
-            if rn.state != Leader {
-                rn.mu.Unlock()
-                return
-            }
+	heartbeatInterval := getHeartbeatInterval()
 
-            term := rn.currentTerm
-            rn.mu.Unlock()
+	for {
+		select {
+		case <-rn.Shutdown:
+			log.Printf("Heartbeat stopped for node %d", rn.Id)
+			return
+		default:
+			rn.Mu.Lock()
+			if rn.State != Leader {
+				rn.Mu.Unlock()
+				return
+			}
 
-            for pid, client := range rn.grpcClients {
-                go func(pid int32, client pb.RaftClient) {
-                    ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-                    defer cancel()
-                    _, _ = client.AppendEntries(ctx, &pb.AppendEntriesRequest{Term: term})
-                }(pid, client)
-            }
+			term := rn.CurrentTerm
+			rn.Mu.Unlock()
 
-            time.Sleep(heartbeatTime * time.Millisecond)
-        }
-    }
+			for pid, client := range rn.grpcClients {
+				go func(pid int32, client pb.RaftClient) {
+					ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout*time.Second)
+					defer cancel()
+					_, _ = client.AppendEntries(ctx, &pb.AppendEntriesRequest{Term: term})
+				}(pid, client)
+			}
+
+			time.Sleep(heartbeatInterval)
+		}
+	}
 }
 
 func (rn *RaftNode) CleanResources() {
-    log.Printf("cleaning resources for node %d", rn.id)
+	log.Printf("cleaning resources for node %d", rn.Id)
 
-    for pid, conn := range rn.clientConns {
-        if err := conn.Close(); err != nil {
-            log.Printf("Error closing connection to %d: %v", pid, err)
-        }
-    }
+	for pid, conn := range rn.clientConns {
+		if err := conn.Close(); err != nil {
+			log.Printf("Error closing connection to %d: %v", pid, err)
+		}
+	}
 }
