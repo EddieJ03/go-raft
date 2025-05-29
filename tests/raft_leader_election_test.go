@@ -67,7 +67,7 @@ func checkAllStatus(nodes []*raft.RaftNode, interval time.Duration, done chan st
 
 /*
 waitForStableLeader waits for the cluster to have a stable leader
-returns id of the leader if found else returns -1 
+returns id of the leader if found else returns -1
 */
 func waitForStableLeader(statusChan chan []TestNodeStatus, timeout time.Duration) int {
 	deadline := time.After(timeout)
@@ -114,7 +114,7 @@ func waitForStableLeader(statusChan chan []TestNodeStatus, timeout time.Duration
 	}
 }
 
-// Test if leadership can be established within 10 seconds, no failures 
+// Test if leadership can be established within 10 seconds, no failures
 func TestLeaderElection(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
@@ -149,7 +149,7 @@ func TestLeaderElection(t *testing.T) {
 	close(statusChan)
 
 	// close each backend
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		close(nodes[i].Shutdown)
 	}
 }
@@ -164,9 +164,9 @@ func TestLeaderFailElection(t *testing.T) {
 
 	// test node configuration
 	peers := map[int32]string{
-		0: "localhost:50071",
-		1: "localhost:50072",
-		2: "localhost:50073",
+		0: "localhost:50051",
+		1: "localhost:50052",
+		2: "localhost:50053",
 	}
 
 	nodes := make([]*raft.RaftNode, 3)
@@ -210,7 +210,7 @@ func TestLeaderFailElection(t *testing.T) {
 	}
 }
 
-// Test if a node joining the cluster becomes a follower 
+// Test if a node joining the cluster becomes a follower
 func TestJoinCluster(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
@@ -219,14 +219,14 @@ func TestJoinCluster(t *testing.T) {
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "2000")
 
 	peers := map[int32]string{
-		0: "localhost:50061",
-		1: "localhost:50062",
-		2: "localhost:50063",
+		0: "localhost:50051",
+		1: "localhost:50052",
+		2: "localhost:50053",
 	}
 	numNodes := len(peers)
 	nodes := make([]*raft.RaftNode, numNodes)
 	shutdownChans := make([]chan struct{}, numNodes)
-	initialNodeCount := numNodes - 1 
+	initialNodeCount := numNodes - 1
 
 	// leave one node out intentionally
 	initialNodesSlice := make([]*raft.RaftNode, initialNodeCount)
@@ -295,7 +295,7 @@ CheckLoop:
 				}
 			}
 
-			if joinedNodeStatus.ID == joiningNodeID && finalLeaderStatus.ID == int32(finalLeaderID) { 
+			if joinedNodeStatus.ID == joiningNodeID && finalLeaderStatus.ID == int32(finalLeaderID) {
 				if joinedNodeStatus.State == raft.Follower && joinedNodeStatus.Term == finalLeaderStatus.Term {
 					break CheckLoop
 				}
@@ -396,9 +396,9 @@ func TestFollowerFailure(t *testing.T) {
 
 	// test node configuration
 	peers := map[int32]string{
-		0: "localhost:50071",
-		1: "localhost:50072",
-		2: "localhost:50073",
+		0: "localhost:50051",
+		1: "localhost:50052",
+		2: "localhost:50053",
 	}
 
 	nodes := make([]*raft.RaftNode, 3)
@@ -461,9 +461,9 @@ func TestLeaderAndFollowerFailElection(t *testing.T) {
 
 	// test node configuration
 	peers := map[int32]string{
-		0: "localhost:50071",
-		1: "localhost:50072",
-		2: "localhost:50073",
+		0: "localhost:50051",
+		1: "localhost:50052",
+		2: "localhost:50053",
 	}
 
 	nodes := make([]*raft.RaftNode, 3)
