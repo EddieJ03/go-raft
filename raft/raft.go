@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,6 +50,7 @@ type RaftNode struct {
 	pb.UnimplementedRaftServer
 
 	Mu            sync.Mutex
+	MuMap         sync.Mutex
 	Id            int32
 	State         State
 	CurrentTerm   int32
@@ -141,7 +143,7 @@ func (rn *RaftNode) RequestVote(ctx context.Context, req *pb.RequestVoteRequest)
 func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	rn.Mu.Lock()
 	defer rn.Mu.Unlock()
-
+	rn.electionReset = time.Now()
 	if req.Term < rn.CurrentTerm {
 		return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
 	}
@@ -155,6 +157,7 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 	rn.leaderId = req.LeaderId
 
 	if int(req.PrevLogIndex) >= len(rn.Logs) || (req.PrevLogTerm != rn.Logs[req.PrevLogIndex].Term) {
+		log.Printf("inconsistent log")
 		return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
 	}
 	reqEntries := make([]Log, len(req.Entries))
@@ -168,14 +171,55 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 		}
 	}
 
-	rn.Logs = append(rn.Logs, reqEntries...)
-
+	if len(reqEntries) > 0 {
+		rn.Logs = append(rn.Logs, reqEntries...)
+		log.Println("Appended ", prettyPrintLogs(rn.Logs))
+	}
 	if req.LeaderCommit > rn.commitIndex {
 		rn.commitIndex = min(req.LeaderCommit, int32(len(rn.Logs)-1))
 	}
 
-	rn.electionReset = time.Now()
+	rn.applyState()
+
 	return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: true}, nil
+}
+
+func prettyPrintLogs(logs []Log) string {
+	var result strings.Builder
+	result.WriteString("[")
+	for _, log := range logs {
+		var op string
+		switch log.Op {
+		case Set:
+			op = "Set"
+		case Delete:
+			op = "Del"
+		case NoOp:
+			op = "Nop"
+		}
+		result.WriteString(fmt.Sprintf("(%d-%d: %s %s %s),", log.Index, log.Term, op, log.Key, log.Value))
+	}
+	result.WriteString("]")
+	return result.String()
+}
+
+func (rn *RaftNode) applyState() {
+	for rn.commitIndex > rn.lastApplied {
+		if rn.lastApplied < int32(len(rn.Logs)) {
+			rn.lastApplied++
+			to_apply := rn.Logs[rn.lastApplied]
+			switch to_apply.Op {
+			case Set:
+				rn.stateMachine[to_apply.Key] = to_apply.Value
+			case Delete:
+				delete(rn.stateMachine, to_apply.Key)
+			case NoOp:
+				// No operation, do nothing
+			}
+
+			fmt.Printf("Applied %d\n%v\n", rn.lastApplied, rn.stateMachine)
+		}
+	}
 }
 
 func getHeartbeatInterval() time.Duration {
@@ -295,9 +339,8 @@ func (rn *RaftNode) ClientRequest(op int32, key, value string) (string, error) {
 	defer rn.Mu.Unlock()
 
 	if rn.State != Leader {
-		return "", errors.New("not the leader")
+		return fmt.Sprintf("%d is the leader", rn.leaderId), errors.New("not the leader")
 	}
-
 	entry := Log{
 		Term:  rn.CurrentTerm,
 		Op:    op,
@@ -305,11 +348,137 @@ func (rn *RaftNode) ClientRequest(op int32, key, value string) (string, error) {
 		Value: value,
 		Index: int32(len(rn.Logs)),
 	}
-
 	rn.Logs = append(rn.Logs, entry)
-	rn.commitIndex = int32(len(rn.Logs) - 1)
+	rn.leaderMatchIndex[rn.Id] = entry.Index
 
-	return fmt.Sprintf("Client request received: %v", entry), nil
+	for pid, client := range rn.grpcClients {
+		go rn.UpdateFollower(pid, client)
+	}
+
+	return fmt.Sprintf("CLIENT: request received: %v", entry), nil
+}
+
+// Leader increments matchIndex and updates commitIndex
+func (rn *RaftNode) setMatchIndex(id int32, index int32) {
+	// traverse all new indices in range that may be majority
+	for i := rn.commitIndex + 1; i <= index; i++ {
+		if i > rn.commitIndex && rn.Logs[i].Term == rn.CurrentTerm {
+			count := 0
+			for _, matchIdx := range rn.leaderMatchIndex {
+				if matchIdx >= i {
+					count++
+				}
+			}
+			if count > len(rn.peers)/2 {
+				rn.commitIndex = i
+			}
+		}
+	}
+	rn.leaderMatchIndex[id] = index
+
+	// may be a new commit index, so apply state
+	rn.applyState()
+}
+
+// Leader repeats AppendEntries to follower until successful
+func (rn *RaftNode) UpdateFollower(id int32, client pb.RaftClient) {
+	term := rn.CurrentTerm
+	lastIndex := int32(len(rn.Logs) - 1)
+	clientIndex := rn.leaderNextIndex[id]
+
+	// already up to date, empty heartbeat
+	if clientIndex > lastIndex {
+		ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout*time.Second)
+		defer cancel()
+
+		req := &pb.AppendEntriesRequest{
+			Term:         term,
+			LeaderId:     rn.Id,
+			PrevLogIndex: clientIndex - 1,
+			PrevLogTerm:  rn.Logs[clientIndex-1].Term,
+			Entries:      []*pb.Entry{}, // empty entries for heartbeat
+			LeaderCommit: rn.commitIndex,
+		}
+		resp, err := client.AppendEntries(ctx, req)
+		if err == nil {
+			if resp.Success {
+				// all logs still up to date
+				rn.MuMap.Lock()
+				rn.leaderNextIndex[id] = lastIndex + 1
+				rn.setMatchIndex(id, lastIndex)
+				rn.MuMap.Unlock()
+				return
+			} else {
+				// there is another leader
+				if resp.Term > rn.CurrentTerm {
+					rn.CurrentTerm = resp.Term
+					rn.VotedFor = -1
+					rn.State = Follower
+					return
+				} else {
+					// follower is not up to date, will run the for loop below
+					clientIndex--
+				}
+			}
+		} else {
+			// failed to send, next heartbeat will retry
+			return
+		}
+	}
+
+	// update follower with entries
+	for clientIndex <= lastIndex {
+		ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout*time.Second)
+		defer cancel()
+
+		req := &pb.AppendEntriesRequest{
+			Term:         term,
+			LeaderId:     rn.Id,
+			PrevLogIndex: clientIndex - 1,
+			PrevLogTerm:  rn.Logs[clientIndex-1].Term,
+			Entries:      convertToRPCEntries(rn.Logs[clientIndex:]),
+			LeaderCommit: rn.commitIndex,
+		}
+		resp, err := client.AppendEntries(ctx, req)
+		if err == nil {
+			if resp.Success {
+				// all logs up to date
+				rn.MuMap.Lock()
+				rn.leaderNextIndex[id] = lastIndex + 1
+				rn.setMatchIndex(id, lastIndex)
+				rn.MuMap.Unlock()
+				return
+			} else {
+				// there is another leader
+				if resp.Term > rn.CurrentTerm {
+					rn.CurrentTerm = resp.Term
+					rn.VotedFor = -1
+					rn.State = Follower
+					return
+				} else {
+					// inconsistent log
+					clientIndex--
+				}
+			}
+		} else {
+			// failed to send, next heartbeat will retry
+			return
+		}
+	}
+}
+
+func convertToRPCEntries(logs []Log) []*pb.Entry {
+	entries := make([]*pb.Entry, len(logs))
+	for i, log := range logs {
+		entries[i] = &pb.Entry{
+			Term:  log.Term,
+			Op:    log.Op,
+			Key:   log.Key,
+			Value: log.Value,
+			Index: log.Index,
+		}
+	}
+	return entries
 }
 
 func (rn *RaftNode) sendHeartbeats() {
@@ -326,17 +495,10 @@ func (rn *RaftNode) sendHeartbeats() {
 				rn.Mu.Unlock()
 				return
 			}
-
-			term := rn.CurrentTerm
-			rn.Mu.Unlock()
-
 			for pid, client := range rn.grpcClients {
-				go func(pid int32, client pb.RaftClient) {
-					ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout*time.Second)
-					defer cancel()
-					_, _ = client.AppendEntries(ctx, &pb.AppendEntriesRequest{Term: term})
-				}(pid, client)
+				go rn.UpdateFollower(pid, client)
 			}
+			rn.Mu.Unlock()
 		}
 	}
 }
