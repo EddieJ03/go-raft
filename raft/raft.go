@@ -74,7 +74,7 @@ type RaftNode struct {
 	leaderMatchIndex map[int32]int32
 }
 
-type PersistantState struct {
+type PersistentState struct {
 	CurrentTerm int32
 	VotedFor    int32
 	Logs        []Log
@@ -138,7 +138,7 @@ func (rn *RaftNode) write_logfile() {
 	}
 	defer file.Close()
 	encoder := gob.NewEncoder(file)
-	if err := encoder.Encode(PersistantState{CurrentTerm: rn.CurrentTerm, VotedFor: rn.VotedFor, Logs: rn.Logs}); err != nil {
+	if err := encoder.Encode(PersistentState{CurrentTerm: rn.CurrentTerm, VotedFor: rn.VotedFor, Logs: rn.Logs}); err != nil {
 		panic(err)
 	}
 }
@@ -155,7 +155,7 @@ func (rn *RaftNode) read_logfile() error {
 	}
 	defer file.Close()
 	decoder := gob.NewDecoder(file)
-	var state PersistantState
+	var state PersistentState
 	if err := decoder.Decode(&state); err != nil {
 		log.Printf("Error decoding log file: %v", err)
 		return err
