@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -39,7 +40,7 @@ func main() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 
-	rn := raft.NewRaftNode(int32(*nodeID), peers, shutdown)
+	rn := raft.NewRaftNode(int32(*nodeID), peers, shutdown, filepath.Join("logs", fmt.Sprintf("raft_node_%d", int32(*nodeID))))
 
 	go utils.ServeBackend(int32(*nodeID), peers, shutdown, rn)
 

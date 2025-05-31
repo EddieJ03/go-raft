@@ -1,14 +1,26 @@
 package utils
 
 import (
+	"fmt"
 	"log"
 	"net"
+	"os"
 
 	"github.com/EddieJ03/223b-raft/raft"
 	pb "github.com/EddieJ03/223b-raft/raft/github.com/EddieJ03/223b-raft"
 	"google.golang.org/grpc"
 )
 
+func CleanLogs(dir string) error {
+    err := os.RemoveAll(dir)
+    if err != nil {
+        fmt.Printf("Error removing folder: %v\n", err)
+    } else {
+        fmt.Println("Folder and all contents removed.")
+    }
+
+    return nil
+}
 
 func ServeBackend(nodeID int32, peers map[int32]string, shutdown chan struct{}, rn *raft.RaftNode) {
     addr, ok := peers[nodeID]

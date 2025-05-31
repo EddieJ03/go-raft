@@ -69,6 +69,7 @@ type RaftNode struct {
 	lastApplied   int32
 	StateMachine  map[string]string
 	leaderId      int32
+
 	// used only by leader
 	leaderNextIndex  map[int32]int32
 	leaderMatchIndex map[int32]int32
@@ -80,7 +81,7 @@ type PersistentState struct {
 	Logs        []Log
 }
 
-func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}) *RaftNode {
+func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}, path string) *RaftNode {
 	clients := make(map[int32]pb.RaftClient)
 	clientConns := make(map[int32]*grpc.ClientConn)
 
@@ -97,7 +98,7 @@ func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}) *Raft
 	}
 
 	rn := &RaftNode{
-		Path:             filepath.Join("logs", fmt.Sprintf("raft_node_%d", Id)),
+		Path:             path,
 		Id:               Id,
 		State:            Follower,
 		CurrentTerm:      0,
@@ -121,30 +122,35 @@ func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}) *Raft
 		fmt.Println("Error creating directory:", err)
 	}
 
-	if err := rn.read_logfile(); err != nil {
+	if err := rn.ReadLogFile(); err != nil {
 		// start with initial state
-		rn.write_logfile()
+		rn.WriteLogFile()
 	}
 
 	go rn.runElectionTimer()
 	return rn
 }
 
-func (rn *RaftNode) write_logfile() {
+func (rn *RaftNode) WriteLogFile() {
 	file, err := os.OpenFile(filepath.Join(rn.Path, "raft.log"), os.O_CREATE|os.O_WRONLY, 0644)
+
 	if err != nil {
 		log.Printf("Error opening log file: %v", err)
 		return
 	}
+
 	defer file.Close()
+
 	encoder := gob.NewEncoder(file)
+
 	if err := encoder.Encode(PersistentState{CurrentTerm: rn.CurrentTerm, VotedFor: rn.VotedFor, Logs: rn.Logs}); err != nil {
 		panic(err)
 	}
 }
 
-func (rn *RaftNode) read_logfile() error {
+func (rn *RaftNode) ReadLogFile() error {
 	file, err := os.Open(filepath.Join(rn.Path, "raft.log"))
+
 	if err != nil {
 		if os.IsNotExist(err) {
 			log.Println("Log file does not exist")
@@ -153,16 +159,22 @@ func (rn *RaftNode) read_logfile() error {
 		log.Printf("Error opening log file: %v", err)
 		return err
 	}
+
 	defer file.Close()
+
 	decoder := gob.NewDecoder(file)
+
 	var state PersistentState
+
 	if err := decoder.Decode(&state); err != nil {
 		log.Printf("Error decoding log file: %v", err)
 		return err
 	}
+
 	rn.CurrentTerm = state.CurrentTerm
 	rn.VotedFor = state.VotedFor
 	rn.Logs = state.Logs
+
 	fmt.Println("Read logs from file:", prettyPrintLogs(rn.Logs))
 	return nil
 }
@@ -201,6 +213,7 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 	rn.Mu.Lock()
 	defer rn.Mu.Unlock()
 	rn.electionReset = time.Now()
+
 	if req.Term < rn.CurrentTerm {
 		return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
 	}
@@ -217,6 +230,7 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 		log.Printf("inconsistent log")
 		return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
 	}
+
 	reqEntries := make([]Log, len(req.Entries))
 	for i, entry := range req.Entries {
 		reqEntries[i] = Log{
@@ -232,12 +246,15 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 		rn.Logs = append(rn.Logs, reqEntries...)
 		log.Println("Appended ", prettyPrintLogs(rn.Logs))
 	}
+
 	if req.LeaderCommit > rn.CommitIndex {
 		rn.CommitIndex = min(req.LeaderCommit, int32(len(rn.Logs)-1))
 	}
 
 	rn.applyState()
-	rn.write_logfile()
+
+	// always persist logs
+	rn.WriteLogFile()
 
 	return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: true}, nil
 }
@@ -427,6 +444,7 @@ func (rn *RaftNode) setMatchIndex(id int32, index int32) {
 					count++
 				}
 			}
+			
 			if count > len(rn.peers)/2 {
 				rn.CommitIndex = i
 			}
