@@ -62,9 +62,9 @@ type RaftNode struct {
 	clientConns   map[int32]*grpc.ClientConn
 	Shutdown      chan struct{}
 	Logs          []Log
-	commitIndex   int32
+	CommitIndex   int32
 	lastApplied   int32
-	stateMachine  map[string]string
+	StateMachine  map[string]string
 	leaderId      int32
 	// used only by leader
 	leaderNextIndex  map[int32]int32
@@ -98,9 +98,9 @@ func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}) *Raft
 		clientConns:      clientConns,
 		Shutdown:         Shutdown,
 		Logs:             []Log{{Term: 0, Op: NoOp, Key: "", Value: "", Index: 0}},
-		commitIndex:      0,
+		CommitIndex:      0,
 		lastApplied:      0,
-		stateMachine:     make(map[string]string),
+		StateMachine:     make(map[string]string),
 		leaderNextIndex:  make(map[int32]int32),
 		leaderMatchIndex: make(map[int32]int32),
 		leaderId:         -1,
@@ -175,8 +175,8 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 		rn.Logs = append(rn.Logs, reqEntries...)
 		log.Println("Appended ", prettyPrintLogs(rn.Logs))
 	}
-	if req.LeaderCommit > rn.commitIndex {
-		rn.commitIndex = min(req.LeaderCommit, int32(len(rn.Logs)-1))
+	if req.LeaderCommit > rn.CommitIndex {
+		rn.CommitIndex = min(req.LeaderCommit, int32(len(rn.Logs)-1))
 	}
 
 	rn.applyState()
@@ -204,20 +204,20 @@ func prettyPrintLogs(logs []Log) string {
 }
 
 func (rn *RaftNode) applyState() {
-	for rn.commitIndex > rn.lastApplied {
+	for rn.CommitIndex > rn.lastApplied {
 		if rn.lastApplied < int32(len(rn.Logs)) {
 			rn.lastApplied++
 			to_apply := rn.Logs[rn.lastApplied]
 			switch to_apply.Op {
 			case Set:
-				rn.stateMachine[to_apply.Key] = to_apply.Value
+				rn.StateMachine[to_apply.Key] = to_apply.Value
 			case Delete:
-				delete(rn.stateMachine, to_apply.Key)
+				delete(rn.StateMachine, to_apply.Key)
 			case NoOp:
 				// No operation, do nothing
 			}
 
-			fmt.Printf("Applied %d\n%v\n", rn.lastApplied, rn.stateMachine)
+			fmt.Printf("Applied %d\n%v\n", rn.lastApplied, rn.StateMachine)
 		}
 	}
 }
@@ -358,11 +358,11 @@ func (rn *RaftNode) ClientRequest(op int32, key, value string) (string, error) {
 	return fmt.Sprintf("CLIENT: request received: %v", entry), nil
 }
 
-// Leader increments matchIndex and updates commitIndex
+// Leader increments matchIndex and updates CommitIndex
 func (rn *RaftNode) setMatchIndex(id int32, index int32) {
 	// traverse all new indices in range that may be majority
-	for i := rn.commitIndex + 1; i <= index; i++ {
-		if i > rn.commitIndex && rn.Logs[i].Term == rn.CurrentTerm {
+	for i := rn.CommitIndex + 1; i <= index; i++ {
+		if i > rn.CommitIndex && rn.Logs[i].Term == rn.CurrentTerm {
 			count := 0
 			for _, matchIdx := range rn.leaderMatchIndex {
 				if matchIdx >= i {
@@ -370,7 +370,7 @@ func (rn *RaftNode) setMatchIndex(id int32, index int32) {
 				}
 			}
 			if count > len(rn.peers)/2 {
-				rn.commitIndex = i
+				rn.CommitIndex = i
 			}
 		}
 	}
@@ -397,7 +397,7 @@ func (rn *RaftNode) UpdateFollower(id int32, client pb.RaftClient) {
 			PrevLogIndex: clientIndex - 1,
 			PrevLogTerm:  rn.Logs[clientIndex-1].Term,
 			Entries:      []*pb.Entry{}, // empty entries for heartbeat
-			LeaderCommit: rn.commitIndex,
+			LeaderCommit: rn.CommitIndex,
 		}
 		resp, err := client.AppendEntries(ctx, req)
 		if err == nil {
@@ -437,7 +437,7 @@ func (rn *RaftNode) UpdateFollower(id int32, client pb.RaftClient) {
 			PrevLogIndex: clientIndex - 1,
 			PrevLogTerm:  rn.Logs[clientIndex-1].Term,
 			Entries:      convertToRPCEntries(rn.Logs[clientIndex:]),
-			LeaderCommit: rn.commitIndex,
+			LeaderCommit: rn.CommitIndex,
 		}
 		resp, err := client.AppendEntries(ctx, req)
 		if err == nil {
