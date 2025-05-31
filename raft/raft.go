@@ -2,11 +2,13 @@ package raft
 
 import (
 	"context"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"log"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,6 +51,7 @@ type Log struct {
 type RaftNode struct {
 	pb.UnimplementedRaftServer
 
+	Path          string
 	Mu            sync.Mutex
 	MuMap         sync.Mutex
 	Id            int32
@@ -71,6 +74,12 @@ type RaftNode struct {
 	leaderMatchIndex map[int32]int32
 }
 
+type PersistantState struct {
+	CurrentTerm int32
+	VotedFor    int32
+	Logs        []Log
+}
+
 func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}) *RaftNode {
 	clients := make(map[int32]pb.RaftClient)
 	clientConns := make(map[int32]*grpc.ClientConn)
@@ -88,6 +97,7 @@ func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}) *Raft
 	}
 
 	rn := &RaftNode{
+		Path:             filepath.Join("logs", fmt.Sprintf("raft_node_%d", Id)),
 		Id:               Id,
 		State:            Follower,
 		CurrentTerm:      0,
@@ -106,8 +116,55 @@ func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}) *Raft
 		leaderId:         -1,
 	}
 
+	err := os.MkdirAll(rn.Path, 0755)
+	if err != nil {
+		fmt.Println("Error creating directory:", err)
+	}
+
+	if err := rn.read_logfile(); err != nil {
+		// start with initial state
+		rn.write_logfile()
+	}
+
 	go rn.runElectionTimer()
 	return rn
+}
+
+func (rn *RaftNode) write_logfile() {
+	file, err := os.OpenFile(filepath.Join(rn.Path, "raft.log"), os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Printf("Error opening log file: %v", err)
+		return
+	}
+	defer file.Close()
+	encoder := gob.NewEncoder(file)
+	if err := encoder.Encode(PersistantState{CurrentTerm: rn.CurrentTerm, VotedFor: rn.VotedFor, Logs: rn.Logs}); err != nil {
+		panic(err)
+	}
+}
+
+func (rn *RaftNode) read_logfile() error {
+	file, err := os.Open(filepath.Join(rn.Path, "raft.log"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Println("Log file does not exist")
+			return err
+		}
+		log.Printf("Error opening log file: %v", err)
+		return err
+	}
+	defer file.Close()
+	decoder := gob.NewDecoder(file)
+	var state PersistantState
+	if err := decoder.Decode(&state); err != nil {
+		log.Printf("Error decoding log file: %v", err)
+		return err
+	}
+	rn.CurrentTerm = state.CurrentTerm
+	rn.VotedFor = state.VotedFor
+	rn.Logs = state.Logs
+	fmt.Println("Read logs from file:", prettyPrintLogs(rn.Logs))
+	return nil
 }
 
 func (rn *RaftNode) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
@@ -180,6 +237,7 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 	}
 
 	rn.applyState()
+	rn.write_logfile()
 
 	return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: true}, nil
 }
