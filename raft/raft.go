@@ -371,7 +371,6 @@ func (rn *RaftNode) startElection() {
 
 			resp, err := client.RequestVote(ctx, req)
 			if err != nil {
-				// log.Printf("can't request vote from %d: %v", pid, err)
 				return
 			}
 

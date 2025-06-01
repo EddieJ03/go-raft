@@ -290,7 +290,7 @@ func TestMultipleOperationsLogReplicationNoFailures(t *testing.T) {
 	}
 }
 
-func TestLogReplicationFollowerFailureThenRecovery(t *testing.T) {
+func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
@@ -475,6 +475,14 @@ func TestLogReplicationMinorityAlive(t *testing.T) {
 	close(shutdowns[leaderID])
 }
 
+func TestLogReplicationMultipleFollowerFailAndVariableRecover(t *testing.T) {
+	runLogReplicationFailuresPartialRecoveryTest(t, 5, 2, 1) // 5 servers, 2 crash, 1 recovers
+	time.Sleep(1*time.Second)
+	runLogReplicationFailuresPartialRecoveryTest(t, 5, 2, 2) // 5 servers, 2 crash, 2 recovers
+	time.Sleep(1*time.Second)
+	runLogReplicationFailuresPartialRecoveryTest(t, 5, 2, 0) // 5 servers, 2 crash, 0 recovers
+}
+
 func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numCrash, numRecover int) {
 	fmt.Printf("Running: %d servers, %d crash, %d recover\n", numServers, numCrash, numRecover)
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
@@ -506,7 +514,6 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 	}
 	fmt.Printf("Leader elected: %d\n", leaderID)
 
-	// Initial operation
 	_, err := nodes[leaderID].ClientRequest(raft.Set, "key1", "value1")
 	if err != nil {
 		t.Fatalf("Failed to submit client request: %v", err)
@@ -516,7 +523,7 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 		t.Fatal("FAILURE: could not achieve initial log replication in 5 seconds")
 	}
 
-	// Crash numCrash followers (not the leader)
+	// Crash numCrash followers, but not the leader
 	crashed := 0
 	for i := 0; i < numServers && crashed < numCrash; i++ {
 		if i != leaderID {
@@ -528,7 +535,7 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 	}
 	time.Sleep(1 * time.Second)
 
-	// Submit more operations while some nodes are down
+	// send more operations while some nodes are down
 	operations := []struct {
 		op    int32
 		key   string
@@ -549,7 +556,7 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 		t.Fatal("FAILURE: could not achieve log replication in 5 seconds with nodes down")
 	}
 
-	// Recover numRecover of the crashed nodes
+	// recover numRecover of the crashed nodes
 	recovered := 0
 	for i := 0; i < numServers && recovered < numRecover; i++ {
 		if nodes[i] == nil && i != leaderID {
@@ -565,7 +572,6 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 		t.Fatal("FAILURE: could not achieve log replication in 5 seconds after partial recovery")
 	}
 
-	// Final operation
 	_, err = nodes[leaderID].ClientRequest(raft.Set, "key4", "value4")
 	if err != nil {
 		t.Fatalf("Failed to submit client request: %v", err)
@@ -574,6 +580,7 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 	if !waitForLogReplication(nodes, 5, 5*time.Second) {
 		t.Fatal("FAILURE: could not achieve log replication in 5 seconds after final operation")
 	}
+
 	if !waitForCommitIndex(nodes, 4, 5*time.Second) {
 		t.Fatal("FAILURE: right commit index could not be achieved in 5 seconds after final operation")
 	}
@@ -584,24 +591,23 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 		"key3": "value3",
 		"key4": "value4",
 	}
+
 	for i, node := range nodes {
 		if node == nil {
 			continue
 		}
 		sm := getNodeStateMachine(node)
+
 		if !mapsEqual(sm, expectedState) {
 			t.Fatalf("FAILURE: node %d map not expected", i)
 		}
 	}
+
 	for i := 0; i < numServers; i++ {
 		if nodes[i] != nil {
 			close(shutdowns[i])
 		}
 	}
-}
-
-func TestLogReplicationFailuresPartialRecovery_Variable(t *testing.T) {
-	runLogReplicationFailuresPartialRecoveryTest(t, 5, 2, 1) // 5 servers, 2 crash, 1 recovers
 }
 
 func mapsEqual(a, b map[string]string) bool {
