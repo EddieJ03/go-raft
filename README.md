@@ -13,5 +13,9 @@ Run `go build main.go`, which creates `main.exe`
 Run `./main --id <number>` to start a node
 - main by default uses `config.yaml`
 
+After nodes are initialized, you can use standard input to send commands to the leader for testing:
+- `set <key> <value>` to set a key-value pair
+- `delete <key> <value>` to delete a key-value pair
+
 ## Tests
 Run `go test ./tests -count=1`

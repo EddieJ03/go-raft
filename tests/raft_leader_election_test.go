@@ -3,6 +3,7 @@ package raft_test
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -67,7 +68,7 @@ func checkAllStatus(nodes []*raft.RaftNode, interval time.Duration, done chan st
 
 /*
 waitForStableLeader waits for the cluster to have a stable leader
-returns id of the leader if found else returns -1 
+returns id of the leader if found else returns -1
 */
 func waitForStableLeader(statusChan chan []TestNodeStatus, timeout time.Duration) int {
 	deadline := time.After(timeout)
@@ -114,13 +115,15 @@ func waitForStableLeader(statusChan chan []TestNodeStatus, timeout time.Duration
 	}
 }
 
-// Test if leadership can be established within 10 seconds, no failures 
+// Test if leadership can be established within 10 seconds, no failures
 func TestLeaderElection(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "2000")
+
+	defer utils.CleanLogs("test_logs")
 
 	// test node configuration
 	peers := map[int32]string{
@@ -133,7 +136,7 @@ func TestLeaderElection(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		shutdown := make(chan struct{})
-		nodes[i] = raft.NewRaftNode(int32(i+1), peers, shutdown)
+		nodes[i] = raft.NewRaftNode(int32(i+1), peers, shutdown, filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i+1))))
 		go utils.ServeBackend(int32(i+1), peers, shutdown, nodes[i])
 	}
 
@@ -149,7 +152,7 @@ func TestLeaderElection(t *testing.T) {
 	close(statusChan)
 
 	// close each backend
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		close(nodes[i].Shutdown)
 	}
 }
@@ -162,18 +165,20 @@ func TestLeaderFailElection(t *testing.T) {
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "2000")
 
+	defer utils.CleanLogs("test_logs")
+
 	// test node configuration
 	peers := map[int32]string{
-		0: "localhost:50071",
-		1: "localhost:50072",
-		2: "localhost:50073",
+		0: "localhost:50051",
+		1: "localhost:50052",
+		2: "localhost:50053",
 	}
 
 	nodes := make([]*raft.RaftNode, 3)
 
 	for i := range 3 {
 		shutdown := make(chan struct{})
-		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdown)
+		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdown, filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i+1))))
 		go utils.ServeBackend(int32(i), peers, shutdown, nodes[i])
 	}
 
@@ -210,7 +215,7 @@ func TestLeaderFailElection(t *testing.T) {
 	}
 }
 
-// Test if a node joining the cluster becomes a follower 
+// Test if a node joining the cluster becomes a follower
 func TestJoinCluster(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
@@ -218,22 +223,24 @@ func TestJoinCluster(t *testing.T) {
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "2000")
 
+	defer utils.CleanLogs("test_logs")
+
 	peers := map[int32]string{
-		0: "localhost:50061",
-		1: "localhost:50062",
-		2: "localhost:50063",
+		0: "localhost:50051",
+		1: "localhost:50052",
+		2: "localhost:50053",
 	}
 	numNodes := len(peers)
 	nodes := make([]*raft.RaftNode, numNodes)
 	shutdownChans := make([]chan struct{}, numNodes)
-	initialNodeCount := numNodes - 1 
+	initialNodeCount := numNodes - 1
 
 	// leave one node out intentionally
 	initialNodesSlice := make([]*raft.RaftNode, initialNodeCount)
 	for i := range initialNodesSlice {
 		id := int32(i)
 		shutdownChans[i] = make(chan struct{})
-		nodes[i] = raft.NewRaftNode(id, peers, shutdownChans[i])
+		nodes[i] = raft.NewRaftNode(id, peers, shutdownChans[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i+1))))
 		initialNodesSlice[i] = nodes[i]
 		go utils.ServeBackend(id, peers, shutdownChans[i], nodes[i])
 	}
@@ -257,7 +264,7 @@ func TestJoinCluster(t *testing.T) {
 	joiningNodeID := int32(numNodes - 1)
 	fmt.Printf("Starting joining node: %d\n", joiningNodeID)
 	shutdownChans[joiningNodeID] = make(chan struct{})
-	nodes[joiningNodeID] = raft.NewRaftNode(joiningNodeID, peers, shutdownChans[joiningNodeID])
+	nodes[joiningNodeID] = raft.NewRaftNode(joiningNodeID, peers, shutdownChans[joiningNodeID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", joiningNodeID)))
 	go utils.ServeBackend(joiningNodeID, peers, shutdownChans[joiningNodeID], nodes[joiningNodeID])
 
 	// wait for the joining node to start
@@ -295,7 +302,7 @@ CheckLoop:
 				}
 			}
 
-			if joinedNodeStatus.ID == joiningNodeID && finalLeaderStatus.ID == int32(finalLeaderID) { 
+			if joinedNodeStatus.ID == joiningNodeID && finalLeaderStatus.ID == int32(finalLeaderID) {
 				if joinedNodeStatus.State == raft.Follower && joinedNodeStatus.Term == finalLeaderStatus.Term {
 					break CheckLoop
 				}
@@ -342,11 +349,13 @@ func TestNoLeaderWithMinorityNodes(t *testing.T) {
 		3: "localhost:50053",
 	}
 
+	defer utils.CleanLogs("test_logs")
+
 	nodes := make([]*raft.RaftNode, 3)
 
 	// only start 1 node
 	shutdown := make(chan struct{})
-	nodes[0] = raft.NewRaftNode(1, peers, shutdown)
+	nodes[0] = raft.NewRaftNode(1, peers, shutdown, filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", 1)))
 	go utils.ServeBackend(1, peers, shutdown, nodes[0])
 
 	nodes[1] = nil
@@ -394,18 +403,20 @@ func TestFollowerFailure(t *testing.T) {
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "2000")
 
+	defer utils.CleanLogs("test_logs")
+
 	// test node configuration
 	peers := map[int32]string{
-		0: "localhost:50071",
-		1: "localhost:50072",
-		2: "localhost:50073",
+		0: "localhost:50051",
+		1: "localhost:50052",
+		2: "localhost:50053",
 	}
 
 	nodes := make([]*raft.RaftNode, 3)
 
 	for i := range 3 {
 		shutdown := make(chan struct{})
-		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdown)
+		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdown, filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i+1))))
 		go utils.ServeBackend(int32(i), peers, shutdown, nodes[i])
 	}
 
@@ -459,18 +470,20 @@ func TestLeaderAndFollowerFailElection(t *testing.T) {
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "2000")
 
+	defer utils.CleanLogs("test_logs")
+
 	// test node configuration
 	peers := map[int32]string{
-		0: "localhost:50071",
-		1: "localhost:50072",
-		2: "localhost:50073",
+		0: "localhost:50051",
+		1: "localhost:50052",
+		2: "localhost:50053",
 	}
 
 	nodes := make([]*raft.RaftNode, 3)
 
 	for i := range 3 {
 		shutdown := make(chan struct{})
-		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdown)
+		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdown, filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i+1))))
 		go utils.ServeBackend(int32(i), peers, shutdown, nodes[i])
 	}
 

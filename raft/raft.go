@@ -2,10 +2,15 @@ package raft
 
 import (
 	"context"
+	"encoding/gob"
+	"errors"
+	"fmt"
 	"log"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,7 +23,7 @@ type State int
 
 const (
 	Follower  State = 0
-	CandIdate State = 1
+	Candidate State = 1
 	Leader    State = 2
 )
 
@@ -26,13 +31,29 @@ const (
 	defaultHeartbeatInterval  = 1000 // default heartbeat every second
 	defaultElectionTimeoutMin = 1500 // miniMum election timeout in milliseconds
 	defaultElectionTimeoutMax = 3000 // maxiMum election timeout in milliseconds
-	DefaultRPCTimeout		 = 1 // default RPC timeout in seconds
+	DefaultRPCTimeout         = 1    // default RPC timeout in seconds
 )
+
+const (
+	Set int32 = iota
+	Delete
+	NoOp
+)
+
+type Log struct {
+	Term  int32
+	Op    int32
+	Key   string
+	Value string
+	Index int32
+}
 
 type RaftNode struct {
 	pb.UnimplementedRaftServer
 
+	Path          string
 	Mu            sync.Mutex
+	MuMap         sync.Mutex
 	Id            int32
 	State         State
 	CurrentTerm   int32
@@ -43,9 +64,24 @@ type RaftNode struct {
 	grpcClients   map[int32]pb.RaftClient
 	clientConns   map[int32]*grpc.ClientConn
 	Shutdown      chan struct{}
+	Logs          []Log
+	CommitIndex   int32
+	lastApplied   int32
+	StateMachine  map[string]string
+	leaderId      int32
+
+	// used only by leader
+	leaderNextIndex  map[int32]int32
+	leaderMatchIndex map[int32]int32
 }
 
-func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}) *RaftNode {
+type PersistentState struct {
+	CurrentTerm int32
+	VotedFor    int32
+	Logs        []Log
+}
+
+func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}, path string) *RaftNode {
 	clients := make(map[int32]pb.RaftClient)
 	clientConns := make(map[int32]*grpc.ClientConn)
 
@@ -62,19 +98,85 @@ func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}) *Raft
 	}
 
 	rn := &RaftNode{
-		Id:            Id,
-		State:         Follower,
-		CurrentTerm:   0,
-		VotedFor:      -1,
-		peers:         peers,
-		grpcClients:   clients,
-		electionReset: time.Now(),
-		clientConns:   clientConns,
-		Shutdown:      Shutdown,
+		Path:             path,
+		Id:               Id,
+		State:            Follower,
+		CurrentTerm:      0,
+		VotedFor:         -1,
+		peers:            peers,
+		grpcClients:      clients,
+		electionReset:    time.Now(),
+		clientConns:      clientConns,
+		Shutdown:         Shutdown,
+		Logs:             []Log{{Term: 0, Op: NoOp, Key: "", Value: "", Index: 0}},
+		CommitIndex:      0,
+		lastApplied:      0,
+		StateMachine:     make(map[string]string),
+		leaderNextIndex:  make(map[int32]int32),
+		leaderMatchIndex: make(map[int32]int32),
+		leaderId:         -1,
+	}
+
+	err := os.MkdirAll(rn.Path, 0755)
+	if err != nil {
+		fmt.Println("Error creating directory:", err)
+	}
+
+	if err := rn.ReadLogFile(); err != nil {
+		// start with initial state
+		rn.WriteLogFile()
 	}
 
 	go rn.runElectionTimer()
 	return rn
+}
+
+func (rn *RaftNode) WriteLogFile() {
+	file, err := os.OpenFile(filepath.Join(rn.Path, "raft.log"), os.O_CREATE|os.O_WRONLY, 0644)
+
+	if err != nil {
+		log.Printf("Error opening log file: %v", err)
+		return
+	}
+
+	defer file.Close()
+
+	encoder := gob.NewEncoder(file)
+
+	if err := encoder.Encode(PersistentState{CurrentTerm: rn.CurrentTerm, VotedFor: rn.VotedFor, Logs: rn.Logs}); err != nil {
+		panic(err)
+	}
+}
+
+func (rn *RaftNode) ReadLogFile() error {
+	file, err := os.Open(filepath.Join(rn.Path, "raft.log"))
+
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Println("Log file does not exist")
+			return err
+		}
+		log.Printf("Error opening log file: %v", err)
+		return err
+	}
+
+	defer file.Close()
+
+	decoder := gob.NewDecoder(file)
+
+	var state PersistentState
+
+	if err := decoder.Decode(&state); err != nil {
+		log.Printf("Error decoding log file: %v", err)
+		return err
+	}
+
+	rn.CurrentTerm = state.CurrentTerm
+	rn.VotedFor = state.VotedFor
+	rn.Logs = state.Logs
+
+	fmt.Println("Read logs from file:", prettyPrintLogs(rn.Logs))
+	return nil
 }
 
 func (rn *RaftNode) RequestVote(ctx context.Context, req *pb.RequestVoteRequest) (*pb.RequestVoteResponse, error) {
@@ -91,7 +193,14 @@ func (rn *RaftNode) RequestVote(ctx context.Context, req *pb.RequestVoteRequest)
 		rn.State = Follower
 	}
 
-	if rn.VotedFor == -1 || rn.VotedFor == req.CandidateId {
+	// 	If the logs have last entries with different terms, then
+	//  the log with the later term is more up-to-date. If the logs
+	//  end with the same term, then whichever log is longer is
+	//  more up-to-date.
+	candidateUpToDate := rn.Logs[len(rn.Logs)-1].Term < req.LastLogTerm ||
+		(rn.Logs[len(rn.Logs)-1].Term == req.LastLogTerm && len(rn.Logs)-1 <= int(req.LastLogIndex))
+
+	if (rn.VotedFor == -1 || rn.VotedFor == req.CandidateId) && candidateUpToDate {
 		rn.VotedFor = req.CandidateId
 		rn.electionReset = time.Now()
 		return &pb.RequestVoteResponse{Term: rn.CurrentTerm, VoteGranted: true}, nil
@@ -103,6 +212,7 @@ func (rn *RaftNode) RequestVote(ctx context.Context, req *pb.RequestVoteRequest)
 func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequest) (*pb.AppendEntriesResponse, error) {
 	rn.Mu.Lock()
 	defer rn.Mu.Unlock()
+	rn.electionReset = time.Now()
 
 	if req.Term < rn.CurrentTerm {
 		return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
@@ -114,8 +224,83 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 		rn.State = Follower
 	}
 
-	rn.electionReset = time.Now()
+	rn.leaderId = req.LeaderId
+
+	if int(req.PrevLogIndex) >= len(rn.Logs) || (req.PrevLogTerm != rn.Logs[req.PrevLogIndex].Term) {
+		log.Printf("inconsistent log")
+		return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
+	}
+
+	// truncate log if necessary
+	rn.Logs = rn.Logs[:req.PrevLogIndex+1]
+
+	reqEntries := make([]Log, len(req.Entries))
+	for i, entry := range req.Entries {
+		reqEntries[i] = Log{
+			Term:  entry.Term,
+			Op:    entry.Op,
+			Key:   entry.Key,
+			Value: entry.Value,
+			Index: entry.Index,
+		}
+	}
+
+	if len(reqEntries) > 0 {
+		rn.Logs = append(rn.Logs, reqEntries...)
+		log.Printf("Node %d appended %s \n", rn.Id, prettyPrintLogs(rn.Logs))
+	}
+
+	if req.LeaderCommit > rn.CommitIndex {
+		rn.CommitIndex = min(req.LeaderCommit, int32(len(rn.Logs)-1))
+	}
+
+	rn.applyState()
+
+	// always persist logs
+	rn.WriteLogFile()
+
 	return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: true}, nil
+}
+
+func prettyPrintLogs(logs []Log) string {
+	var result strings.Builder
+	result.WriteString("[")
+
+	for _, log := range logs {
+		var op string
+		switch log.Op {
+		case Set:
+			op = "Set"
+		case Delete:
+			op = "Del"
+		case NoOp:
+			op = "Nop"
+		}
+		result.WriteString(fmt.Sprintf("(%d-%d: %s %s %s),", log.Index, log.Term, op, log.Key, log.Value))
+	}
+
+	result.WriteString("]")
+	
+	return result.String()
+}
+
+func (rn *RaftNode) applyState() {
+	for rn.CommitIndex > rn.lastApplied {
+		if rn.lastApplied < int32(len(rn.Logs)) {
+			rn.lastApplied++
+			to_apply := rn.Logs[rn.lastApplied]
+			switch to_apply.Op {
+			case Set:
+				rn.StateMachine[to_apply.Key] = to_apply.Value
+			case Delete:
+				delete(rn.StateMachine, to_apply.Key)
+			case NoOp:
+				// No operation, do nothing
+			}
+
+			fmt.Printf("Applied %d\n%v\n", rn.lastApplied, rn.StateMachine)
+		}
+	}
 }
 
 func getHeartbeatInterval() time.Duration {
@@ -167,7 +352,7 @@ func (rn *RaftNode) runElectionTimer() {
 }
 
 func (rn *RaftNode) startElection() {
-	rn.State = CandIdate
+	rn.State = Candidate
 	rn.CurrentTerm++
 	rn.VotedFor = rn.Id
 	rn.VoteCount = 1
@@ -177,10 +362,11 @@ func (rn *RaftNode) startElection() {
 		go func(pid int32, client pb.RaftClient) {
 			ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout*time.Second)
 			defer cancel()
-
 			req := &pb.RequestVoteRequest{
-				Term:        rn.CurrentTerm,
-				CandidateId: rn.Id,
+				Term:         rn.CurrentTerm,
+				CandidateId:  rn.Id,
+				LastLogIndex: int32(len(rn.Logs) - 1),
+				LastLogTerm:  rn.Logs[len(rn.Logs)-1].Term,
 			}
 
 			resp, err := client.RequestVote(ctx, req)
@@ -199,7 +385,7 @@ func (rn *RaftNode) startElection() {
 				return
 			}
 
-			if rn.State != CandIdate || rn.CurrentTerm != req.Term { // request term becomes invalid
+			if rn.State != Candidate || rn.CurrentTerm != req.Term { // request term becomes invalid
 				return
 			}
 
@@ -209,40 +395,208 @@ func (rn *RaftNode) startElection() {
 				if rn.VoteCount > len(rn.peers)/2 {
 					rn.State = Leader
 					log.Printf("Node %d became leader for term %d", rn.Id, rn.CurrentTerm)
-					go rn.sendHeartbeats()
+					go rn.leaderInit()
 				}
 			}
 		}(pid, client)
 	}
 }
 
+func (rn *RaftNode) leaderInit() {
+	rn.Mu.Lock()
+
+	// append NoOp at start of term?
+	// rn.Logs = append(rn.Logs, Log{Term: rn.CurrentTerm, Op: NoOp, Key: "", Value: "", Index: int32(len(rn.Logs))})
+
+	for pid := range rn.peers {
+		if pid == rn.Id {
+			continue
+		}
+
+		rn.leaderNextIndex[pid] = int32(len(rn.Logs))
+		rn.leaderMatchIndex[pid] = 0
+	}
+
+	go rn.sendHeartbeats()
+
+	rn.Mu.Unlock()
+}
+
+func (rn *RaftNode) ClientRequest(op int32, key, value string) (string, error) {
+	rn.Mu.Lock()
+	defer rn.Mu.Unlock()
+
+	if rn.State != Leader {
+		return fmt.Sprintf("%d is the leader", rn.leaderId), errors.New("not the leader")
+	}
+	entry := Log{
+		Term:  rn.CurrentTerm,
+		Op:    op,
+		Key:   key,
+		Value: value,
+		Index: int32(len(rn.Logs)),
+	}
+	rn.Logs = append(rn.Logs, entry)
+	rn.leaderMatchIndex[rn.Id] = entry.Index
+
+	for pid, client := range rn.grpcClients {
+		go rn.UpdateFollower(pid, client)
+	}
+
+	return fmt.Sprintf("CLIENT: request received: %v", entry), nil
+}
+
+// Leader increments matchIndex and updates CommitIndex
+func (rn *RaftNode) setMatchIndex(id int32, index int32) {
+	// traverse all new indices in range that may be majority
+	for i := rn.CommitIndex + 1; i <= index; i++ {
+		if i > rn.CommitIndex && rn.Logs[i].Term == rn.CurrentTerm {
+			count := 0
+
+			for _, matchIdx := range rn.leaderMatchIndex {
+				if matchIdx >= i {
+					count++
+				}
+			}
+			
+			if count > len(rn.peers)/2 {
+				rn.CommitIndex = i
+			}
+		}
+	}
+
+	rn.leaderMatchIndex[id] = index
+
+	// may be a new commit index, so apply state
+	rn.applyState()
+}
+
+// Leader repeats AppendEntries to follower until successful
+func (rn *RaftNode) UpdateFollower(id int32, client pb.RaftClient) {
+	term := rn.CurrentTerm
+	lastIndex := int32(len(rn.Logs) - 1)
+	clientIndex := rn.leaderNextIndex[id]
+
+	// already up to date, empty heartbeat
+	if clientIndex > lastIndex {
+		ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout*time.Second)
+		defer cancel()
+
+		req := &pb.AppendEntriesRequest{
+			Term:         term,
+			LeaderId:     rn.Id,
+			PrevLogIndex: clientIndex - 1,
+			PrevLogTerm:  rn.Logs[clientIndex-1].Term,
+			Entries:      []*pb.Entry{}, // empty entries for heartbeat
+			LeaderCommit: rn.CommitIndex,
+		}
+
+		resp, err := client.AppendEntries(ctx, req)
+
+		if err == nil {
+			if resp.Success {
+				// all logs still up to date
+				rn.MuMap.Lock()
+				rn.leaderNextIndex[id] = lastIndex + 1
+				rn.setMatchIndex(id, lastIndex)
+				rn.MuMap.Unlock()
+				return
+			} else {
+				// there is another leader
+				if resp.Term > rn.CurrentTerm {
+					rn.CurrentTerm = resp.Term
+					rn.VotedFor = -1
+					rn.State = Follower
+					return
+				} else {
+					// follower is not up to date, will run the for loop below
+					clientIndex--
+				}
+			}
+		} else {
+			// failed to send, next heartbeat will retry
+			return
+		}
+	}
+
+	// update follower with entries
+	for clientIndex <= lastIndex {
+		ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout*time.Second)
+		defer cancel()
+
+		req := &pb.AppendEntriesRequest{
+			Term:         term,
+			LeaderId:     rn.Id,
+			PrevLogIndex: clientIndex - 1,
+			PrevLogTerm:  rn.Logs[clientIndex-1].Term,
+			Entries:      convertToRPCEntries(rn.Logs[clientIndex:]),
+			LeaderCommit: rn.CommitIndex,
+		}
+
+		resp, err := client.AppendEntries(ctx, req)
+
+		if err == nil {
+			if resp.Success {
+				// all logs up to date
+				rn.MuMap.Lock()
+				rn.leaderNextIndex[id] = lastIndex + 1
+				rn.setMatchIndex(id, lastIndex)
+				rn.MuMap.Unlock()
+				return
+			} else {
+				// there is another leader
+				if resp.Term > rn.CurrentTerm {
+					rn.CurrentTerm = resp.Term
+					rn.VotedFor = -1
+					rn.State = Follower
+					return
+				} else {
+					// inconsistent log
+					clientIndex--
+				}
+			}
+		} else {
+			// failed to send, next heartbeat will retry
+			return
+		}
+	}
+}
+
+func convertToRPCEntries(logs []Log) []*pb.Entry {
+	entries := make([]*pb.Entry, len(logs))
+	for i, log := range logs {
+		entries[i] = &pb.Entry{
+			Term:  log.Term,
+			Op:    log.Op,
+			Key:   log.Key,
+			Value: log.Value,
+			Index: log.Index,
+		}
+	}
+	return entries
+}
+
 func (rn *RaftNode) sendHeartbeats() {
-	heartbeatInterval := getHeartbeatInterval()
+	heartbeatTick := time.NewTicker(getHeartbeatInterval())
 
 	for {
 		select {
 		case <-rn.Shutdown:
 			log.Printf("Heartbeat stopped for node %d", rn.Id)
 			return
-		default:
+		case <-heartbeatTick.C:
 			rn.Mu.Lock()
+
 			if rn.State != Leader {
 				rn.Mu.Unlock()
 				return
 			}
 
-			term := rn.CurrentTerm
-			rn.Mu.Unlock()
-
 			for pid, client := range rn.grpcClients {
-				go func(pid int32, client pb.RaftClient) {
-					ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout*time.Second)
-					defer cancel()
-					_, _ = client.AppendEntries(ctx, &pb.AppendEntriesRequest{Term: term})
-				}(pid, client)
+				go rn.UpdateFollower(pid, client)
 			}
-
-			time.Sleep(heartbeatInterval)
+			
+			rn.Mu.Unlock()
 		}
 	}
 }
