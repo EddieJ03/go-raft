@@ -169,6 +169,7 @@ func TestOneOperationLogReplicationNoFailures(t *testing.T) {
 
 	// wait for leader election
 	statusChan := make(chan struct{})
+	defer close(statusChan)
 	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
 	var leaderID int
@@ -207,6 +208,7 @@ func TestOneOperationLogReplicationNoFailures(t *testing.T) {
 	for i := range 3 {
 		close(shutdowns[i])
 	}
+	time.Sleep(1*time.Second)
 }
 
 func TestMultipleOperationsLogReplicationNoFailures(t *testing.T) {
@@ -235,6 +237,7 @@ func TestMultipleOperationsLogReplicationNoFailures(t *testing.T) {
 	}
 
 	statusChan := make(chan struct{})
+	defer close(statusChan)
 	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
 	var leaderID int
@@ -288,6 +291,7 @@ func TestMultipleOperationsLogReplicationNoFailures(t *testing.T) {
 	for i := range 3 {
 		close(shutdowns[i])
 	}
+	time.Sleep(1*time.Second)
 }
 
 func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
@@ -315,6 +319,7 @@ func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
 	}
 
 	statusChan := make(chan struct{})
+	defer close(statusChan)
 	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
 	var leaderID int
@@ -418,6 +423,7 @@ func TestLogReplicationMinorityAlive(t *testing.T) {
 	}
 
 	statusChan := make(chan struct{})
+	defer close(statusChan)
 	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
 	var leaderID int
@@ -473,6 +479,7 @@ func TestLogReplicationMinorityAlive(t *testing.T) {
 	}
 
 	close(shutdowns[leaderID])
+	time.Sleep(1*time.Second)
 }
 
 func TestLogReplicationMultipleFollowerFailAndVariableRecover(t *testing.T) {
@@ -481,6 +488,309 @@ func TestLogReplicationMultipleFollowerFailAndVariableRecover(t *testing.T) {
 	runLogReplicationFailuresPartialRecoveryTest(t, 5, 2, 2) // 5 servers, 2 crash, 2 recovers
 	time.Sleep(1*time.Second)
 	runLogReplicationFailuresPartialRecoveryTest(t, 5, 2, 0) // 5 servers, 2 crash, 0 recovers
+	time.Sleep(1*time.Second)
+}
+
+func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
+	fmt.Println("Running:", t.Name())
+
+	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
+	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
+	os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "2000")
+
+	defer utils.CleanLogs("test_logs")
+
+	peers := map[int32]string{
+		0: "localhost:50051",
+		1: "localhost:50052",
+		2: "localhost:50053",
+	}
+
+	nodes := make([]*raft.RaftNode, 3)
+	shutdowns := make([]chan struct{}, 3)
+
+	for i := range 3 {
+		shutdowns[i] = make(chan struct{})
+		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
+		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
+	}
+
+	statusChan := make(chan struct{})
+	defer close(statusChan)
+	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
+
+	var originalLeaderID int
+	if originalLeaderID = waitForStableLeader(statusUpdates, 10*time.Second); originalLeaderID == -1 {
+		t.Fatal("FAILURE: could not achieve stable leadership in 10 seconds")
+	}
+	fmt.Printf("Initial leader: %d\n", originalLeaderID)
+
+	_, err := nodes[originalLeaderID].ClientRequest(raft.Set, "key1", "value1")
+	if err != nil {
+		t.Fatalf("Failed to submit client request: %v", err)
+	}
+
+	_, err = nodes[originalLeaderID].ClientRequest(raft.Set, "key2", "value2")
+	if err != nil {
+		t.Fatalf("Failed to submit client request: %v", err)
+	}
+
+	if !waitForLogReplication(nodes, 3, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 3")
+	}
+
+	if !waitForCommitIndex(nodes, 2, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve right commit index of 2 within 5 seconds")
+	}
+
+	// kill the current leader
+	fmt.Printf("Killing leader %d\n", originalLeaderID)
+	close(shutdowns[originalLeaderID])
+	nodes[originalLeaderID] = nil
+	time.Sleep(1 * time.Second) 
+
+	var newLeaderID int
+	if newLeaderID = waitForStableLeader(statusUpdates, 10*time.Second); newLeaderID == -1 {
+		t.Fatal("FAILURE: could not elect new leader within 10 seconds after leader failure")
+	}
+
+	if newLeaderID == originalLeaderID {
+		t.Fatal("FAILURE: new leader ID should be different from killed leader")
+	}
+	fmt.Printf("New leader elected: %d\n", newLeaderID)
+
+	_, err = nodes[newLeaderID].ClientRequest(raft.Set, "key3", "value3")
+	if err != nil {
+		t.Fatalf("Failed to submit client request to new leader: %v", err)
+	}
+
+	_, err = nodes[newLeaderID].ClientRequest(raft.Set, "key4", "value4")
+	if err != nil {
+		t.Fatalf("Failed to submit second client request to new leader: %v", err)
+	}
+
+	// Wait for replication among remaining nodes
+	if !waitForLogReplication(nodes, 5, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 5 with new leader")
+	}
+
+	if !waitForCommitIndex(nodes, 4, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve right commit index of 4 within 5 seconds with new leader")
+	}
+
+	// restart original leader
+	shutdowns[originalLeaderID] = make(chan struct{})
+	nodes[originalLeaderID] = raft.NewRaftNode(int32(originalLeaderID), peers, shutdowns[originalLeaderID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(originalLeaderID))))
+	go utils.ServeBackend(int32(originalLeaderID), peers, shutdowns[originalLeaderID], nodes[originalLeaderID])
+	fmt.Printf("Restarted original leader %d (now follower)\n", originalLeaderID)
+
+	// Wait for the restarted node to catch up
+	if !waitForLogReplication(nodes, 5, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 5 after recovery")
+	}
+
+	if !waitForCommitIndex(nodes, 4, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve right commit index of 4 within 5 seconds after recovery")
+	}
+
+	// Submit one more request to verify continued operation
+	_, err = nodes[newLeaderID].ClientRequest(raft.Set, "key5", "value5")
+	if err != nil {
+		t.Fatalf("Failed to submit final client request: %v", err)
+	}
+
+	if !waitForLogReplication(nodes, 6, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve final log replication in 5 seconds up to length 6")
+	}
+
+	if !waitForCommitIndex(nodes, 5, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve commit index in 5 seconds up to index 5")
+	}
+
+	// Verify all nodes have consistent state
+	expectedState := map[string]string{
+		"key1": "value1",
+		"key2": "value2",
+		"key3": "value3",
+		"key4": "value4",
+		"key5": "value5",
+	}
+
+	for i, node := range nodes {
+		if node == nil {
+			continue
+		}
+		sm := getNodeStateMachine(node)
+		if !mapsEqual(sm, expectedState) {
+			t.Fatalf("FAILURE: node %d state machine not as expected. Got: %v, Expected: %v", i, sm, expectedState)
+		}
+	}
+
+	// Clean shutdown
+	for i := range 3 {
+		if shutdowns[i] != nil {
+			close(shutdowns[i])
+		}
+	}
+	
+	time.Sleep(1*time.Second)
+}
+
+func TestLogReplicationLeaderFailureWithUncommittedThenRecovery(t *testing.T) {
+	fmt.Println("Running:", t.Name())
+
+	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
+	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
+	os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "2000")
+
+	defer utils.CleanLogs("test_logs")
+
+	peers := map[int32]string{
+		0: "localhost:50051",
+		1: "localhost:50052",
+		2: "localhost:50053",
+	}
+
+	nodes := make([]*raft.RaftNode, 3)
+	shutdowns := make([]chan struct{}, 3)
+
+	for i := range 3 {
+		shutdowns[i] = make(chan struct{})
+		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
+		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
+	}
+
+	statusChan := make(chan struct{})
+	defer close(statusChan)
+	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
+
+	var originalLeaderID int
+	if originalLeaderID = waitForStableLeader(statusUpdates, 10*time.Second); originalLeaderID == -1 {
+		t.Fatal("FAILURE: could not achieve stable leadership in 10 seconds")
+	}
+	fmt.Printf("Initial leader: %d\n", originalLeaderID)
+
+	_, err := nodes[originalLeaderID].ClientRequest(raft.Set, "key1", "value1")
+	if err != nil {
+		t.Fatalf("Failed to submit client request: %v", err)
+	}
+
+	_, err = nodes[originalLeaderID].ClientRequest(raft.Set, "key2", "value2")
+	if err != nil {
+		t.Fatalf("Failed to submit client request: %v", err)
+	}
+
+	if !waitForLogReplication(nodes, 3, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 3")
+	}
+
+	if !waitForCommitIndex(nodes, 2, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve right commit index of 2 within 5 seconds")
+	}
+
+	// kill the current leader
+	fmt.Printf("Killing leader %d\n", originalLeaderID)
+	close(shutdowns[originalLeaderID])
+
+	// replace leaders PersistentState with uncommitted stuff
+	nodes[originalLeaderID].Logs = append(nodes[originalLeaderID].Logs, []raft.Log{{
+		Term:  nodes[originalLeaderID].CurrentTerm,
+		Op:    raft.Set,
+		Key:   "uncommitted key 1",
+		Value: "uncommited value 1",
+		Index: int32(len(nodes[originalLeaderID].Logs)),
+	},{
+		Term:  nodes[originalLeaderID].CurrentTerm,
+		Op:    raft.Set,
+		Key:   "uncommitted key 2",
+		Value: "uncommited value 2",
+		Index: int32(len(nodes[originalLeaderID].Logs)+1),
+	}}...)
+
+	// persist it
+	nodes[originalLeaderID].WriteLogFile()
+
+	nodes[originalLeaderID] = nil
+
+	var newLeaderID int
+	if newLeaderID = waitForStableLeader(statusUpdates, 10*time.Second); newLeaderID == -1 {
+		t.Fatal("FAILURE: could not elect new leader within 10 seconds after leader failure")
+	}
+
+	if newLeaderID == originalLeaderID {
+		t.Fatal("FAILURE: new leader ID should be different from killed leader")
+	}
+	fmt.Printf("New leader elected: %d\n", newLeaderID)
+
+	_, err = nodes[newLeaderID].ClientRequest(raft.Set, "key3", "value3")
+	if err != nil {
+		t.Fatalf("Failed to submit client request to new leader: %v", err)
+	}
+
+	_, err = nodes[newLeaderID].ClientRequest(raft.Set, "key4", "value4")
+	if err != nil {
+		t.Fatalf("Failed to submit second client request to new leader: %v", err)
+	}
+
+	if !waitForLogReplication(nodes, 5, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 5 with new leader")
+	}
+
+	if !waitForCommitIndex(nodes, 4, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve right commit index of 4 within 5 seconds with new leader")
+	}
+
+	// restart former leader
+	shutdowns[originalLeaderID] = make(chan struct{})
+	nodes[originalLeaderID] = raft.NewRaftNode(int32(originalLeaderID), peers, shutdowns[originalLeaderID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(originalLeaderID))))
+	go utils.ServeBackend(int32(originalLeaderID), peers, shutdowns[originalLeaderID], nodes[originalLeaderID])
+	fmt.Printf("Restarted original leader %d (now follower)\n", originalLeaderID)
+
+	if !waitForLogReplication(nodes, 5, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 5 after recovery")
+	}
+
+	if !waitForCommitIndex(nodes, 4, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve right commit index of 4 within 5 seconds after recovery")
+	}
+
+	_, err = nodes[newLeaderID].ClientRequest(raft.Set, "key5", "value5")
+	if err != nil {
+		t.Fatalf("Failed to submit final client request: %v", err)
+	}
+
+	if !waitForLogReplication(nodes, 6, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve final log replication in 5 seconds up to length 6")
+	}
+
+	if !waitForCommitIndex(nodes, 5, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve commit index in 5 seconds up to index 5")
+	}
+
+	expectedState := map[string]string{
+		"key1": "value1",
+		"key2": "value2",
+		"key3": "value3",
+		"key4": "value4",
+		"key5": "value5",
+	}
+
+	for i, node := range nodes {
+		if node == nil {
+			continue
+		}
+		sm := getNodeStateMachine(node)
+		if !mapsEqual(sm, expectedState) {
+			t.Fatalf("FAILURE: node %d state machine not as expected. Got: %v, Expected: %v", i, sm, expectedState)
+		}
+	}
+
+	for i := range 3 {
+		if shutdowns[i] != nil {
+			close(shutdowns[i])
+		}
+	}
+	time.Sleep(1*time.Second)
 }
 
 func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numCrash, numRecover int) {
@@ -506,6 +816,7 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 	}
 
 	statusChan := make(chan struct{})
+	defer close(statusChan)
 	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
 	var leaderID int

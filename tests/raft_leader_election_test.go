@@ -213,6 +213,7 @@ func TestLeaderFailElection(t *testing.T) {
 			close(nodes[i].Shutdown)
 		}
 	}
+	time.Sleep(1*time.Second)
 }
 
 // Test if a node joining the cluster becomes a follower
@@ -250,7 +251,7 @@ func TestJoinCluster(t *testing.T) {
 
 	leaderID := waitForStableLeader(initialStatusUpdates, 15*time.Second)
 	if leaderID == -1 {
-		t.Error("FAILURE: Could not elect a leader in the initial cluster")
+		t.Fatal("FAILURE: Could not elect a leader in the initial cluster")
 	}
 
 	nodes[leaderID].Mu.Lock()
@@ -327,12 +328,15 @@ CheckLoop:
 
 	// cleanup
 	close(allNodesStatusDone)
+
 	fmt.Println("Shutting down nodes...")
+
 	for i := range numNodes {
 		if shutdownChans[i] != nil {
 			close(shutdownChans[i])
 		}
 	}
+	time.Sleep(1*time.Second)
 }
 
 // Test no leader elected if minority nodes alive
@@ -393,6 +397,7 @@ loop:
 	} else {
 		fmt.Println("SUCCESS: No leader was elected with minority nodes")
 	}
+	time.Sleep(1*time.Second)
 }
 
 // Test to make sure 1 follower failure does not trigger an election change
@@ -460,6 +465,7 @@ func TestFollowerFailure(t *testing.T) {
 			close(nodes[i].Shutdown)
 		}
 	}
+	time.Sleep(1*time.Second)
 }
 
 // Test if no leader can be elected after leader AND a follower fails
@@ -527,4 +533,11 @@ func TestLeaderAndFollowerFailElection(t *testing.T) {
 
 	close(statusChan)
 	close(newStatusChan)
+
+	for i := range 3 {
+		if nodes[i] != nil {
+			close(nodes[i].Shutdown)
+		}
+	}
+	time.Sleep(1*time.Second)
 }
