@@ -75,7 +75,7 @@ func waitForCommitIndex(nodes []*raft.RaftNode, expectedCommitIndex int32, timeo
 				}
 				
 				commitIndex := getNodeCommitIndex(node)
-				if commitIndex < expectedCommitIndex || commitIndex > expectedCommitIndex {
+				if commitIndex != expectedCommitIndex {
 					allMatch = false
 					break
 				}
@@ -108,7 +108,7 @@ func waitForLogReplication(nodes []*raft.RaftNode, expectedLength int, timeout t
 				}
 			}
 			
-			if len(referenceLogs) < expectedLength {
+			if len(referenceLogs) != expectedLength {
 				continue
 			}
 			
@@ -118,7 +118,7 @@ func waitForLogReplication(nodes []*raft.RaftNode, expectedLength int, timeout t
 				}
 				
 				nodeLogs := getNodeLogs(node)
-				if len(nodeLogs) < expectedLength {
+				if len(nodeLogs) != expectedLength {
 					allMatch = false
 					break
 				}
@@ -358,6 +358,10 @@ func TestLogReplicationFollowerFailureThenRecovery(t *testing.T) {
 	
 	if !waitForLogReplication(nodes, 4, 5*time.Second) {
 		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 4")
+	}
+
+	if !waitForCommitIndex(nodes, 3, 5*time.Second) {
+		t.Fatal("FAILURE: could not achieve right commit index of 3 within 5 seconds")
 	}
 	
 	// restart
