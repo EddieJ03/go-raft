@@ -290,7 +290,7 @@ func TestMultipleOperationsLogReplicationNoFailures(t *testing.T) {
 	}
 }
 
-func TestLogReplicationFollowerFailureThenRecovery(t *testing.T) {
+func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 	
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
