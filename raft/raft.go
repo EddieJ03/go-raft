@@ -78,7 +78,7 @@ type RaftNode struct {
 	leaderId      int32
 
 	// snapshot fields
-	snapshot              *Snapshot
+	Snapshot              *Snapshot
 	compactionThreshold   int32
 
 	// used only by leader
@@ -128,7 +128,7 @@ func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}, path 
 		leaderMatchIndex: make(map[int32]int32),
 		leaderId:         -1,
 		compactionThreshold: getCompactionThreshold(),
-		snapshot:            nil,
+		Snapshot:            nil,
 	}
 
 	err := os.MkdirAll(rn.Path, 0755)
@@ -157,7 +157,7 @@ func (rn *RaftNode) WriteLogFile() {
 
 	encoder := gob.NewEncoder(file)
 
-	if err := encoder.Encode(PersistentState{CurrentTerm: rn.CurrentTerm, VotedFor: rn.VotedFor, Logs: rn.Logs, Snapshot: rn.snapshot}); err != nil {
+	if err := encoder.Encode(PersistentState{CurrentTerm: rn.CurrentTerm, VotedFor: rn.VotedFor, Logs: rn.Logs, Snapshot: rn.Snapshot}); err != nil {
 		panic(err)
 	}
 
@@ -192,17 +192,17 @@ func (rn *RaftNode) ReadLogFile() error {
 	rn.CurrentTerm = state.CurrentTerm
 	rn.VotedFor = state.VotedFor
 	rn.Logs = state.Logs
-	rn.snapshot = state.Snapshot
+	rn.Snapshot = state.Snapshot
 
 	// make sure to restore state machine from snapshot if it exists!
-	if rn.snapshot != nil {
+	if rn.Snapshot != nil {
 		rn.StateMachine = make(map[string]string)
 
-		for k, v := range rn.snapshot.Data {
+		for k, v := range rn.Snapshot.Data {
 			rn.StateMachine[k] = v
 		}
 
-		rn.lastApplied = rn.snapshot.LastIncludedIndex
+		rn.lastApplied = rn.Snapshot.LastIncludedIndex
 	}
 
 	fmt.Println("Read logs from file:", prettyPrintLogs(rn.Logs))
@@ -272,7 +272,7 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 		}
 	}
 
-	if rn.snapshot == nil { // no snapshot yet, everything is in the Logs
+	if rn.Snapshot == nil { // no snapshot yet, everything is in the Logs
 		if int(req.PrevLogIndex) >= len(rn.Logs) || (req.PrevLogTerm != rn.Logs[req.PrevLogIndex].Term) {
 			return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
 		}
@@ -283,15 +283,15 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 			rn.Logs = append(rn.Logs, reqEntries...)
 		}
 	} else {
-		if(req.PrevLogIndex < rn.snapshot.LastIncludedIndex) {
+		if(req.PrevLogIndex < rn.Snapshot.LastIncludedIndex) {
 			// prev log index is before the snapshot, so we cannot append
 			return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
 		}
 
 		upToKeepIndex := int32(len(rn.Logs)) - 1
 
-		if(req.PrevLogIndex == rn.snapshot.LastIncludedIndex) {
-			if req.PrevLogTerm != rn.snapshot.LastIncludedTerm {
+		if(req.PrevLogIndex == rn.Snapshot.LastIncludedIndex) {
+			if req.PrevLogTerm != rn.Snapshot.LastIncludedTerm {
 				return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
 			}
 
@@ -344,7 +344,7 @@ func (rn *RaftNode) InstallSnapshot(ctx context.Context, req *pb.InstallSnapshot
 	rn.leaderId = req.LeaderId
 
 	// if we already have a more recent snapshot, then ignore this one
-	if rn.snapshot != nil && req.LastIncludedIndex <= rn.snapshot.LastIncludedIndex && req.LastIncludedTerm <= rn.snapshot.LastIncludedTerm {
+	if rn.Snapshot != nil && req.LastIncludedIndex <= rn.Snapshot.LastIncludedIndex && req.LastIncludedTerm <= rn.Snapshot.LastIncludedTerm {
 		return &pb.InstallSnapshotResponse{Term: rn.CurrentTerm}, nil
 	}
 
@@ -377,7 +377,7 @@ func (rn *RaftNode) InstallSnapshot(ctx context.Context, req *pb.InstallSnapshot
 		rn.StateMachine[k] = v
 	}
 
-	rn.snapshot = &Snapshot{
+	rn.Snapshot = &Snapshot{
 		LastIncludedIndex: req.LastIncludedIndex,
 		LastIncludedTerm:  req.LastIncludedTerm,
 		Data:              snapshotData,
@@ -395,28 +395,36 @@ func (rn *RaftNode) InstallSnapshot(ctx context.Context, req *pb.InstallSnapshot
 }
 
 func (rn *RaftNode) applyState() {
-	for rn.lastApplied < rn.CommitIndex {
-		if rn.snapshot != nil && rn.lastApplied <= rn.snapshot.LastIncludedIndex {
+	// skip logs in Logs already applied
+	logIdx := 0
+
+	for logIdx < len(rn.Logs) && rn.Logs[logIdx].Index < rn.lastApplied {
+		logIdx++
+	}
+
+	for logIdx < len(rn.Logs) && rn.lastApplied <= rn.CommitIndex {
+		// skip everything in snapshot
+		if rn.Snapshot != nil && rn.lastApplied <= rn.Snapshot.LastIncludedIndex {
 			rn.lastApplied++
 			continue
 		}
 
-		if rn.lastApplied < int32(len(rn.Logs)) {
-			rn.lastApplied++
+		// now we start applying stuff in the log
 
-			to_apply := rn.Logs[rn.lastApplied]
+		to_apply := rn.Logs[logIdx]
 
-			switch to_apply.Op {
-			case Set:
-				rn.StateMachine[to_apply.Key] = to_apply.Value
-			case Delete:
-				delete(rn.StateMachine, to_apply.Key)
-			case NoOp:
-				// No operation, do nothing
-			}
-
-			fmt.Printf("Applied %d\n%v\n", rn.lastApplied, rn.StateMachine)
+		switch to_apply.Op {
+		case Set:
+			rn.StateMachine[to_apply.Key] = to_apply.Value
+		case Delete:
+			delete(rn.StateMachine, to_apply.Key)
+		case NoOp:
+			// No operation, do nothing
 		}
+
+		logIdx++
+
+		rn.lastApplied++
 	}
 
 	rn.maybeCompactLog()
@@ -425,7 +433,7 @@ func (rn *RaftNode) applyState() {
 
 func (rn *RaftNode) maybeCompactLog() {
 	if int32(len(rn.Logs)) >= rn.compactionThreshold {
-		rn.compactLog(rn.lastApplied)
+		rn.compactLog(rn.lastApplied-1) // lastApplied is one more than what was last applied since it gets increments in applystate
 	}
 }
 
@@ -445,7 +453,7 @@ func (rn *RaftNode) compactLog(upToAppliedIndex int32) {
 		i++
 	}
 
-	rn.snapshot = &Snapshot{
+	rn.Snapshot = &Snapshot{
 		LastIncludedIndex: upToAppliedIndex,
 		LastIncludedTerm:  lastIncludedTerm,
 		Data:              snapshotData,
@@ -458,9 +466,7 @@ func (rn *RaftNode) compactLog(upToAppliedIndex int32) {
 	}
 
 	rn.WriteLogFile()
-
-	log.Printf("Node %d compacted log up to index %d, remaining log size: %d", 
-		rn.Id, upToAppliedIndex, len(rn.Logs))
+	log.Printf("Node %d snapshot created with LastIncludedIndex %d, LastIncludedTerm %d, Logs length %d", rn.Id, rn.Snapshot.LastIncludedIndex, rn.Snapshot.LastIncludedTerm, len(rn.Logs))
 }
 
 func (rn *RaftNode) runElectionTimer() {
@@ -591,7 +597,7 @@ func (rn *RaftNode) setMatchIndex(id int32, index int32) {
 
 	for i := rn.CommitIndex + 1; i <= index; i++ {
 		// if in snapshot, skip
-		if rn.snapshot != nil && i <= rn.snapshot.LastIncludedIndex {
+		if rn.Snapshot != nil && i <= rn.Snapshot.LastIncludedIndex {
 			continue
 		}
 
@@ -671,7 +677,7 @@ func (rn *RaftNode) UpdateFollower(id int32, client pb.RaftClient) {
 	// update follower with entries
 	for clientIndex <= lastIndex {
 		// first check if we need to send a snapshot, next heartbeat will send other entries to follower
-		if rn.snapshot != nil &&  clientIndex <= rn.snapshot.LastIncludedIndex {
+		if rn.Snapshot != nil &&  clientIndex <= rn.Snapshot.LastIncludedIndex {
 			rn.sendSnapshot(id, client)
 			return
 		}
@@ -686,7 +692,7 @@ func (rn *RaftNode) UpdateFollower(id int32, client pb.RaftClient) {
 			prevLogIndex = rn.Logs[logIdx-1].Index
 		} else {
 			// if no more logs, then prevLogIndex is the last included index of the snapshot
-			prevLogIndex = rn.snapshot.LastIncludedIndex
+			prevLogIndex = rn.Snapshot.LastIncludedIndex
 		}
 
 		prevLogTerm := int32(0)
@@ -695,7 +701,7 @@ func (rn *RaftNode) UpdateFollower(id int32, client pb.RaftClient) {
 			prevLogTerm = rn.Logs[logIdx-1].Term
 		} else {
 			// if no more logs, then prevLogIndex is the last included index of the snapshot
-			prevLogTerm = rn.snapshot.LastIncludedTerm
+			prevLogTerm = rn.Snapshot.LastIncludedTerm
 		}
 
 		req := &pb.AppendEntriesRequest{
@@ -764,11 +770,11 @@ func (rn *RaftNode) sendHeartbeats() {
 
 func (rn *RaftNode) getLastLogIndex() int32 {
 	if len(rn.Logs) == 0 {
-		if rn.snapshot == nil {
+		if rn.Snapshot == nil {
 			return 0
 		}
 
-		return rn.snapshot.LastIncludedIndex
+		return rn.Snapshot.LastIncludedIndex
 	}
 
 	return rn.Logs[len(rn.Logs)-1].Index
@@ -776,18 +782,18 @@ func (rn *RaftNode) getLastLogIndex() int32 {
 
 func (rn *RaftNode) getLastLogTerm() int32 {
 	if len(rn.Logs) == 0 {
-		if rn.snapshot == nil {
+		if rn.Snapshot == nil {
 			return 0
 		}
 
-		return rn.snapshot.LastIncludedTerm
+		return rn.Snapshot.LastIncludedTerm
 	}
 
 	return rn.Logs[len(rn.Logs)-1].Term
 }
 
 func (rn *RaftNode) sendSnapshot(id int32, client pb.RaftClient) {
-	if rn.snapshot == nil {
+	if rn.Snapshot == nil {
 		return
 	}
 
@@ -797,9 +803,9 @@ func (rn *RaftNode) sendSnapshot(id int32, client pb.RaftClient) {
 	req := &pb.InstallSnapshotRequest{
 		Term:              rn.CurrentTerm,
 		LeaderId:          rn.Id,
-		LastIncludedIndex: rn.snapshot.LastIncludedIndex,
-		LastIncludedTerm:  rn.snapshot.LastIncludedTerm,
-		Data:              rn.snapshot.Data,
+		LastIncludedIndex: rn.Snapshot.LastIncludedIndex,
+		LastIncludedTerm:  rn.Snapshot.LastIncludedTerm,
+		Data:              rn.Snapshot.Data,
 	}
 
 	resp, err := client.InstallSnapshot(ctx, req)
@@ -820,10 +826,8 @@ func (rn *RaftNode) sendSnapshot(id int32, client pb.RaftClient) {
 	}
 
 	// update follower's nextIndex to just after the snapshot
-	rn.leaderNextIndex[id] = rn.snapshot.LastIncludedIndex + 1
-	rn.setMatchIndex(id, rn.snapshot.LastIncludedIndex)
-
-	log.Printf("Sent snapshot to node %d up to index %d", id, rn.snapshot.LastIncludedIndex)
+	rn.leaderNextIndex[id] = rn.Snapshot.LastIncludedIndex + 1
+	rn.setMatchIndex(id, rn.Snapshot.LastIncludedIndex)
 }
 
 func (rn *RaftNode) CleanResources() {
