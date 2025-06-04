@@ -433,6 +433,11 @@ func (rn *RaftNode) applyState() {
 
 func (rn *RaftNode) maybeCompactLog() {
 	if int32(len(rn.Logs)) >= rn.compactionThreshold {
+		if rn.lastApplied == 0 {
+			// this check is just for defenseive programming, in case lastApplied is 0
+			return		
+		}
+
 		rn.compactLog(rn.lastApplied-1) // lastApplied is one more than what was last applied since it gets increments in applystate
 	}
 }
