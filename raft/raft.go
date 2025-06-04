@@ -272,7 +272,7 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 		}
 	}
 
-	if rn.snapshot != nil { // no snapshot yet, everything is in the Logs
+	if rn.snapshot == nil { // no snapshot yet, everything is in the Logs
 		if int(req.PrevLogIndex) >= len(rn.Logs) || (req.PrevLogTerm != rn.Logs[req.PrevLogIndex].Term) {
 			return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
 		}
@@ -680,16 +680,22 @@ func (rn *RaftNode) UpdateFollower(id int32, client pb.RaftClient) {
 		defer cancel()
 
 		// it could be in the snapshot
-		prevLogIndex := rn.snapshot.LastIncludedIndex
+		prevLogIndex := int32(0)
 
 		if logIdx-1 >= 0 {
 			prevLogIndex = rn.Logs[logIdx-1].Index
+		} else {
+			// if no more logs, then prevLogIndex is the last included index of the snapshot
+			prevLogIndex = rn.snapshot.LastIncludedIndex
 		}
 
-		prevLogTerm := rn.snapshot.LastIncludedTerm
+		prevLogTerm := int32(0)
 
 		if logIdx-1 >= 0 {
-			prevLogIndex = rn.Logs[logIdx-1].Term
+			prevLogTerm = rn.Logs[logIdx-1].Term
+		} else {
+			// if no more logs, then prevLogIndex is the last included index of the snapshot
+			prevLogTerm = rn.snapshot.LastIncludedTerm
 		}
 
 		req := &pb.AppendEntriesRequest{
