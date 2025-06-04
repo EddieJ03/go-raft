@@ -127,7 +127,7 @@ func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}, path 
 		leaderNextIndex:  make(map[int32]int32),
 		leaderMatchIndex: make(map[int32]int32),
 		leaderId:         -1,
-		compactionThreshold: defaultCompactionThreshold,
+		compactionThreshold: getCompactionThreshold(),
 		snapshot:            nil,
 	}
 
@@ -838,6 +838,16 @@ func (rn *RaftNode) CleanResources() {
 
 
 // Helper functions
+
+func getCompactionThreshold() int32 {
+	if val := os.Getenv("RAFT_COMPACTION_THRESHOLD"); val != "" {
+		if threshold, err := strconv.Atoi(val); err == nil {
+			return int32(threshold)
+		}
+	}
+
+	return defaultCompactionThreshold
+}
 
 func getHeartbeatInterval() time.Duration {
 	if val := os.Getenv("RAFT_HEARTBEAT_INTERVAL"); val != "" {
