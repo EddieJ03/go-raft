@@ -73,7 +73,10 @@ type RaftNode struct {
 	Shutdown      chan struct{}
 	Logs          []Log
 	CommitIndex   int32
+
+	// one more than what was last applied, technically
 	lastApplied   int32
+
 	StateMachine  map[string]string
 	leaderId      int32
 
@@ -171,10 +174,9 @@ func (rn *RaftNode) ReadLogFile() error {
 
 	if err != nil {
 		if os.IsNotExist(err) {
-			log.Println("Log file does not exist")
 			return err
 		}
-		log.Printf("Error opening log file: %v", err)
+		
 		return err
 	}
 
@@ -201,8 +203,6 @@ func (rn *RaftNode) ReadLogFile() error {
 		for k, v := range rn.Snapshot.Data {
 			rn.StateMachine[k] = v
 		}
-
-		rn.lastApplied = rn.Snapshot.LastIncludedIndex
 	}
 
 	fmt.Println("Read logs from file:", prettyPrintLogs(rn.Logs))
@@ -386,10 +386,8 @@ func (rn *RaftNode) InstallSnapshot(ctx context.Context, req *pb.InstallSnapshot
 	// make sure to persist first, then update lastapplied and commit
 	rn.WriteLogFile()
 
-	rn.lastApplied = req.LastIncludedIndex
+	rn.lastApplied = req.LastIncludedIndex+1
 	rn.CommitIndex = max(rn.CommitIndex, req.LastIncludedIndex)
-
-	log.Printf("Node %d installed snapshot up to index %d", rn.Id, req.LastIncludedIndex)
 
 	return &pb.InstallSnapshotResponse{Term: rn.CurrentTerm}, nil
 }
@@ -471,7 +469,6 @@ func (rn *RaftNode) compactLog(upToAppliedIndex int32) {
 	}
 
 	rn.WriteLogFile()
-	log.Printf("Node %d snapshot created with LastIncludedIndex %d, LastIncludedTerm %d, Logs length %d", rn.Id, rn.Snapshot.LastIncludedIndex, rn.Snapshot.LastIncludedTerm, len(rn.Logs))
 }
 
 func (rn *RaftNode) runElectionTimer() {
@@ -685,6 +682,11 @@ func (rn *RaftNode) UpdateFollower(id int32, client pb.RaftClient) {
 		if rn.Snapshot != nil &&  clientIndex <= rn.Snapshot.LastIncludedIndex {
 			rn.sendSnapshot(id, client)
 			return
+		}
+
+		// make sure logIdx points to right log entry index, aka it should not be ahead of clientIndex
+		for logIdx >= 0 && rn.Logs[logIdx].Index > clientIndex {
+			logIdx--
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), DefaultRPCTimeout*time.Second)
@@ -901,6 +903,7 @@ func prettyPrintLogs(logs []Log) string {
 		case NoOp:
 			op = "Nop"
 		}
+
 		result.WriteString(fmt.Sprintf("(%d-%d: %s %s %s),", log.Index, log.Term, op, log.Key, log.Value))
 	}
 
