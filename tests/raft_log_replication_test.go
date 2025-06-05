@@ -793,6 +793,147 @@ func TestLogReplicationLeaderFailureWithUncommittedThenRecovery(t *testing.T) {
 	time.Sleep(1*time.Second)
 }
 
+func TestLogPersistenceAllNodesCrashAndRecover(t *testing.T) {
+    fmt.Println("Running:", t.Name())
+
+    os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
+    os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
+    os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "2000")
+
+    defer utils.CleanLogs("test_logs")
+
+    peers := map[int32]string{
+        0: "localhost:50051",
+        1: "localhost:50052",
+        2: "localhost:50053",
+    }
+
+    nodes := make([]*raft.RaftNode, 3)
+    shutdowns := make([]chan struct{}, 3)
+
+    // Start all nodes
+    for i := range 3 {
+        shutdowns[i] = make(chan struct{})
+        nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
+        go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
+    }
+
+    statusChan := make(chan struct{})
+    defer close(statusChan)
+    statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
+
+    var leaderID int
+    if leaderID = waitForStableLeader(statusUpdates, 10*time.Second); leaderID == -1 {
+        t.Fatal("FAILURE: could not achieve stable leadership in 10 seconds")
+    }
+
+    // Submit several operations
+    operations := []struct {
+        op    int32
+        key   string
+        value string
+    }{
+        {raft.Set, "key1", "value1"},
+        {raft.Set, "key2", "value2"},
+        {raft.Set, "key3", "value3"},
+        {raft.Delete, "key2", ""},
+        {raft.Set, "key4", "value4"},
+    }
+
+    for _, op := range operations {
+        _, err := nodes[leaderID].ClientRequest(op.op, op.key, op.value)
+        if err != nil {
+            t.Fatalf("Failed to submit client request: %v", err)
+        }
+        time.Sleep(100 * time.Millisecond)
+    }
+
+    // Wait for replication
+    if !waitForLogReplication(nodes, 6, 5*time.Second) {
+        t.Fatal("FAILURE: log replication could not be achieved in 5 seconds")
+    }
+
+    if !waitForCommitIndex(nodes, 5, 5*time.Second) {
+        t.Fatal("FAILURE: right commit index could not be achieved in 5 seconds")
+    }
+
+    expectedState := map[string]string{
+        "key1": "value1",
+        "key3": "value3",
+        "key4": "value4",
+    }
+
+    for i, node := range nodes {
+        sm := getNodeStateMachine(node)
+        if !mapsEqual(sm, expectedState) {
+            t.Fatalf("Before crash: node %d state machine not as expected\nGot: %v\nWant: %v", i, sm, expectedState)
+        }
+    }
+
+    fmt.Println("Crashing all nodes...")
+    for i := range 3 {
+        close(shutdowns[i])
+        nodes[i] = nil
+    }
+    time.Sleep(2 * time.Second)
+
+    // now restart all nodes
+    fmt.Println("Restarting all nodes...")
+    for i := range 3 {
+        shutdowns[i] = make(chan struct{})
+        nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
+        go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
+    }
+
+    statusUpdates = checkAllStatus(nodes, 100*time.Millisecond, statusChan)
+    if leaderID = waitForStableLeader(statusUpdates, 10*time.Second); leaderID == -1 {
+        t.Fatal("FAILURE: could not achieve stable leadership after restart in 10 seconds")
+    }
+
+    // try new operations after new leader elected
+    newOps := []struct {
+        op    int32
+        key   string
+        value string
+    }{
+        {raft.Set, "key5", "value5"},
+        {raft.Set, "key6", "value6"},
+    }
+
+    for _, op := range newOps {
+        _, err := nodes[leaderID].ClientRequest(op.op, op.key, op.value)
+        if err != nil {
+            t.Fatalf("Failed to submit client request after recovery: %v", err)
+        }
+        time.Sleep(20 * time.Millisecond)
+    }
+
+    // Wait for replication of new operations
+    if !waitForLogReplication(nodes, 8, 5*time.Second) {
+        t.Fatal("FAILURE: log replication could not be achieved in 5 seconds after new operations")
+    }
+
+    if !waitForCommitIndex(nodes, 7, 5*time.Second) {
+        t.Fatal("FAILURE: right commit index could not be achieved in 5 seconds after new operations")
+    }
+
+    expectedState["key5"] = "value5"
+    expectedState["key6"] = "value6"
+
+    for i, node := range nodes {
+        sm := getNodeStateMachine(node)
+        if !mapsEqual(sm, expectedState) {
+            t.Fatalf("Final state: node %d state machine not as expected\nGot: %v\nWant: %v", i, sm, expectedState)
+        }
+    }
+
+    for i := range 3 {
+        close(shutdowns[i])
+    }
+
+    time.Sleep(1 * time.Second)
+}
+
 func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numCrash, numRecover int) {
 	fmt.Printf("Running: %d servers, %d crash, %d recover\n", numServers, numCrash, numRecover)
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
