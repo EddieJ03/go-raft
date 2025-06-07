@@ -457,6 +457,8 @@ func TestLogCompactionLostPersistantData(t *testing.T) {
 	}
 
 	time.Sleep(1 * time.Second)
+}
+
 // logs can be snapshot multiple times and restored
 func TestLogCompactionManySnapshots(t *testing.T) {
 	// set small compaction threshold for testing
