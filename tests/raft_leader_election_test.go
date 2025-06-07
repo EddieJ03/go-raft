@@ -213,7 +213,7 @@ func TestLeaderFailElection(t *testing.T) {
 			close(nodes[i].Shutdown)
 		}
 	}
-	time.Sleep(1*time.Second)
+	time.Sleep(1 * time.Second)
 }
 
 // Test if a node joining the cluster becomes a follower
@@ -336,7 +336,7 @@ CheckLoop:
 			close(shutdownChans[i])
 		}
 	}
-	time.Sleep(1*time.Second)
+	time.Sleep(1 * time.Second)
 }
 
 // Test no leader elected if minority nodes alive
@@ -397,7 +397,7 @@ loop:
 	} else {
 		fmt.Println("SUCCESS: No leader was elected with minority nodes")
 	}
-	time.Sleep(1*time.Second)
+	time.Sleep(1 * time.Second)
 }
 
 // Test to make sure 1 follower failure does not trigger an election change
@@ -465,7 +465,7 @@ func TestFollowerFailure(t *testing.T) {
 			close(nodes[i].Shutdown)
 		}
 	}
-	time.Sleep(1*time.Second)
+	time.Sleep(1 * time.Second)
 }
 
 // Test if no leader can be elected after leader AND a follower fails
@@ -539,5 +539,5 @@ func TestLeaderAndFollowerFailElection(t *testing.T) {
 			close(nodes[i].Shutdown)
 		}
 	}
-	time.Sleep(1*time.Second)
+	time.Sleep(1 * time.Second)
 }
