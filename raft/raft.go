@@ -28,11 +28,11 @@ const (
 )
 
 const (
-	defaultHeartbeatInterval   = 1000  // default heartbeat every second
-	defaultElectionTimeoutMin  = 1500  // miniMum election timeout in milliseconds
-	defaultElectionTimeoutMax  = 3000  // maxiMum election timeout in milliseconds
-	defaultCompactionThreshold = 200   // compact when log grows beyond this size
-	DefaultRPCTimeout          = 1     // default RPC timeout in seconds
+	defaultHeartbeatInterval   = 1000 // default heartbeat every second
+	defaultElectionTimeoutMin  = 1500 // miniMum election timeout in milliseconds
+	defaultElectionTimeoutMax  = 3000 // maxiMum election timeout in milliseconds
+	defaultCompactionThreshold = 200  // compact when log grows beyond this size
+	DefaultRPCTimeout          = 1    // default RPC timeout in seconds
 )
 
 const (
@@ -52,7 +52,7 @@ type Log struct {
 type Snapshot struct {
 	LastIncludedIndex int32
 	LastIncludedTerm  int32
-	Data              map[string]string 
+	Data              map[string]string
 }
 
 type RaftNode struct {
@@ -75,14 +75,14 @@ type RaftNode struct {
 	CommitIndex   int32
 
 	// one more than what was last applied, technically
-	lastApplied   int32
+	lastApplied int32
 
-	StateMachine  map[string]string
-	leaderId      int32
+	StateMachine map[string]string
+	leaderId     int32
 
 	// snapshot fields
-	Snapshot              *Snapshot
-	compactionThreshold   int32
+	Snapshot            *Snapshot
+	compactionThreshold int32
 
 	// used only by leader
 	leaderNextIndex  map[int32]int32
@@ -90,10 +90,10 @@ type RaftNode struct {
 }
 
 type PersistentState struct {
-	CurrentTerm  int32
-	VotedFor     int32
-	Logs         []Log
-	Snapshot     *Snapshot
+	CurrentTerm int32
+	VotedFor    int32
+	Logs        []Log
+	Snapshot    *Snapshot
 }
 
 func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}, path string) *RaftNode {
@@ -113,23 +113,23 @@ func NewRaftNode(Id int32, peers map[int32]string, Shutdown chan struct{}, path 
 	}
 
 	rn := &RaftNode{
-		Path:             path,
-		Id:               Id,
-		State:            Follower,
-		CurrentTerm:      0,
-		VotedFor:         -1,
-		peers:            peers,
-		grpcClients:      clients,
-		electionReset:    time.Now(),
-		clientConns:      clientConns,
-		Shutdown:         Shutdown,
-		Logs:             []Log{{Term: 0, Op: NoOp, Key: "", Value: "", Index: 0}},
-		CommitIndex:      0,
-		lastApplied:      0,
-		StateMachine:     make(map[string]string),
-		leaderNextIndex:  make(map[int32]int32),
-		leaderMatchIndex: make(map[int32]int32),
-		leaderId:         -1,
+		Path:                path,
+		Id:                  Id,
+		State:               Follower,
+		CurrentTerm:         0,
+		VotedFor:            -1,
+		peers:               peers,
+		grpcClients:         clients,
+		electionReset:       time.Now(),
+		clientConns:         clientConns,
+		Shutdown:            Shutdown,
+		Logs:                []Log{{Term: 0, Op: NoOp, Key: "", Value: "", Index: 0}},
+		CommitIndex:         0,
+		lastApplied:         0,
+		StateMachine:        make(map[string]string),
+		leaderNextIndex:     make(map[int32]int32),
+		leaderMatchIndex:    make(map[int32]int32),
+		leaderId:            -1,
 		compactionThreshold: getCompactionThreshold(),
 		Snapshot:            nil,
 	}
@@ -176,7 +176,7 @@ func (rn *RaftNode) ReadLogFile() error {
 		if os.IsNotExist(err) {
 			return err
 		}
-		
+
 		return err
 	}
 
@@ -205,7 +205,8 @@ func (rn *RaftNode) ReadLogFile() error {
 		}
 	}
 
-	fmt.Println("Read logs from file:", prettyPrintLogs(rn.Logs))
+	fmt.Println("Read logs from file: ", prettyPrintLogs(rn.Logs))
+	fmt.Println("Read snapshot including index: ", rn.Snapshot.LastIncludedIndex)
 	return nil
 }
 
@@ -249,7 +250,7 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 	if req.Term < rn.CurrentTerm {
 		return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
 	}
-	
+
 	rn.electionReset = time.Now()
 
 	if req.Term > rn.CurrentTerm {
@@ -279,18 +280,15 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 
 		rn.Logs = rn.Logs[:req.PrevLogIndex+1]
 
-		if len(reqEntries) > 0 {
-			rn.Logs = append(rn.Logs, reqEntries...)
-		}
 	} else {
-		if(req.PrevLogIndex < rn.Snapshot.LastIncludedIndex) {
+		if req.PrevLogIndex < rn.Snapshot.LastIncludedIndex {
 			// prev log index is before the snapshot, so we cannot append
 			return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
 		}
 
 		upToKeepIndex := int32(len(rn.Logs)) - 1
 
-		if(req.PrevLogIndex == rn.Snapshot.LastIncludedIndex) {
+		if req.PrevLogIndex == rn.Snapshot.LastIncludedIndex {
 			if req.PrevLogTerm != rn.Snapshot.LastIncludedTerm {
 				return &pb.AppendEntriesResponse{Term: rn.CurrentTerm, Success: false}, nil
 			}
@@ -308,10 +306,9 @@ func (rn *RaftNode) AppendEntries(ctx context.Context, req *pb.AppendEntriesRequ
 		}
 
 		rn.Logs = rn.Logs[:upToKeepIndex+1]
-
-		if len(reqEntries) > 0 {
-			rn.Logs = append(rn.Logs, reqEntries...)
-		}
+	}
+	if len(reqEntries) > 0 {
+		rn.Logs = append(rn.Logs, reqEntries...)
 	}
 
 	if req.LeaderCommit > rn.CommitIndex {
@@ -358,12 +355,12 @@ func (rn *RaftNode) InstallSnapshot(ctx context.Context, req *pb.InstallSnapshot
 				keepFrom = i + 1
 			}
 
-			break 
+			break
 		}
 	}
 
 	if matchFound {
-		rn.Logs = rn.Logs[keepFrom:] 
+		rn.Logs = rn.Logs[keepFrom:]
 	} else {
 		rn.Logs = []Log{} // discard entire log, snapshot is the new starting point
 	}
@@ -386,7 +383,7 @@ func (rn *RaftNode) InstallSnapshot(ctx context.Context, req *pb.InstallSnapshot
 	// make sure to persist first, then update lastapplied and commit
 	rn.WriteLogFile()
 
-	rn.lastApplied = req.LastIncludedIndex+1
+	rn.lastApplied = req.LastIncludedIndex + 1
 	rn.CommitIndex = max(rn.CommitIndex, req.LastIncludedIndex)
 
 	return &pb.InstallSnapshotResponse{Term: rn.CurrentTerm}, nil
@@ -428,15 +425,14 @@ func (rn *RaftNode) applyState() {
 	rn.maybeCompactLog()
 }
 
-
 func (rn *RaftNode) maybeCompactLog() {
 	if int32(len(rn.Logs)) >= rn.compactionThreshold {
 		if rn.lastApplied == 0 {
 			// this check is just for defenseive programming, in case lastApplied is 0
-			return		
+			return
 		}
 
-		rn.compactLog(rn.lastApplied-1) // lastApplied is one more than what was last applied since it gets increments in applystate
+		rn.compactLog(rn.lastApplied - 1) // lastApplied is one more than what was last applied since it gets increments in applystate
 	}
 }
 
@@ -551,7 +547,7 @@ func (rn *RaftNode) leaderInit() {
 			continue
 		}
 
-		rn.leaderNextIndex[pid] = rn.getLastLogIndex()+1
+		rn.leaderNextIndex[pid] = rn.getLastLogIndex() + 1
 		rn.leaderMatchIndex[pid] = 0
 	}
 
@@ -611,7 +607,7 @@ func (rn *RaftNode) setMatchIndex(id int32, index int32) {
 					count++
 				}
 			}
-			
+
 			if count > len(rn.peers)/2 {
 				rn.CommitIndex = i
 			}
@@ -679,7 +675,7 @@ func (rn *RaftNode) UpdateFollower(id int32, client pb.RaftClient) {
 	// update follower with entries
 	for clientIndex <= lastIndex {
 		// first check if we need to send a snapshot, next heartbeat will send other entries to follower
-		if rn.Snapshot != nil &&  clientIndex <= rn.Snapshot.LastIncludedIndex {
+		if rn.Snapshot != nil && clientIndex <= rn.Snapshot.LastIncludedIndex {
 			rn.sendSnapshot(id, client)
 			return
 		}
@@ -769,7 +765,7 @@ func (rn *RaftNode) sendHeartbeats() {
 			for pid, client := range rn.grpcClients {
 				go rn.UpdateFollower(pid, client)
 			}
-			
+
 			rn.Mu.Unlock()
 		}
 	}
@@ -847,7 +843,6 @@ func (rn *RaftNode) CleanResources() {
 	}
 }
 
-
 // Helper functions
 
 func getCompactionThreshold() int32 {
@@ -908,7 +903,7 @@ func prettyPrintLogs(logs []Log) string {
 	}
 
 	result.WriteString("]")
-	
+
 	return result.String()
 }
 

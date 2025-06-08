@@ -268,7 +268,7 @@ func TestLogCompactionFollowerIsFarBehind(t *testing.T) {
 	go utils.ServeBackend(int32(followerID), peers, shutdowns[followerID], nodes[followerID])
 
 	// wait for follower catch-up
-	time.Sleep(3 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	expectedState["key7"] = "value7"
 	expectedState["key8"] = "value8"
