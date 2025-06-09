@@ -18,4 +18,6 @@ After nodes are initialized, you can use standard input to send commands to the 
 - `delete <key> <value>` to delete a key-value pair
 
 ## Tests
-Run `go test ./tests -count=1 -p=1`
+- Running just leader election tests: `go test ./tests -run Election -count=1 -p=1 -failfast`
+- Running just replication tests: `go test ./tests -run Replication -count=1 -p=1 -failfast`
+- Running just compaction tests: `go test ./tests -run Compaction -count=1 -p=1 -failfast`

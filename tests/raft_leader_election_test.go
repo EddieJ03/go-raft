@@ -217,7 +217,7 @@ func TestLeaderFailElection(t *testing.T) {
 }
 
 // Test if a node joining the cluster becomes a follower
-func TestJoinCluster(t *testing.T) {
+func TestJoinClusterElection(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
@@ -340,7 +340,7 @@ CheckLoop:
 }
 
 // Test no leader elected if minority nodes alive
-func TestNoLeaderWithMinorityNodes(t *testing.T) {
+func TestNoLeaderElectionWithMinorityNodes(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
@@ -401,7 +401,7 @@ loop:
 }
 
 // Test to make sure 1 follower failure does not trigger an election change
-func TestFollowerFailure(t *testing.T) {
+func TestElectionFollowerFailure(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")

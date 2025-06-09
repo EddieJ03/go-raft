@@ -203,10 +203,11 @@ func (rn *RaftNode) ReadLogFile() error {
 		for k, v := range rn.Snapshot.Data {
 			rn.StateMachine[k] = v
 		}
+		
+		fmt.Println("Read snapshot including index: ", rn.Snapshot.LastIncludedIndex)
 	}
 
 	fmt.Println("Read logs from file: ", prettyPrintLogs(rn.Logs))
-	fmt.Println("Read snapshot including index: ", rn.Snapshot.LastIncludedIndex)
 	return nil
 }
 
