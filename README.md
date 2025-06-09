@@ -18,4 +18,4 @@ After nodes are initialized, you can use standard input to send commands to the 
 - `delete <key> <value>` to delete a key-value pair
 
 ## Tests
-Run `go test ./tests -count=1`
+Run `go test ./tests -count=1 -p=1`
