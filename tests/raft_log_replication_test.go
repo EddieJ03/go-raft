@@ -160,7 +160,6 @@ func TestOneOperationLogReplicationNoFailures(t *testing.T) {
 	nodes := make([]*raft.RaftNode, 3)
 	shutdowns := make([]chan struct{}, 3)
 
-	// Start all nodes
 	for i := range 3 {
 		shutdowns[i] = make(chan struct{})
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
@@ -229,7 +228,6 @@ func TestMultipleOperationsLogReplicationNoFailures(t *testing.T) {
 	nodes := make([]*raft.RaftNode, 3)
 	shutdowns := make([]chan struct{}, 3)
 
-	// Start all nodes
 	for i := range 3 {
 		shutdowns[i] = make(chan struct{})
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
@@ -332,7 +330,6 @@ func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
 		t.Fatalf("Failed to submit client request: %v", err)
 	}
 
-	// Wait for initial replication
 	if !waitForLogReplication(nodes, 2, 5*time.Second) {
 		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 2")
 	}
@@ -436,7 +433,6 @@ func TestLogReplicationMinorityAlive(t *testing.T) {
 		t.Fatalf("Failed to submit client request: %v", err)
 	}
 
-	// Wait for initial replication
 	if !waitForLogReplication(nodes, 2, 5*time.Second) {
 		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 2")
 	}
