@@ -160,7 +160,6 @@ func TestOneOperationLogReplicationNoFailures(t *testing.T) {
 	nodes := make([]*raft.RaftNode, 3)
 	shutdowns := make([]chan struct{}, 3)
 
-	// Start all nodes
 	for i := range 3 {
 		shutdowns[i] = make(chan struct{})
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
@@ -229,7 +228,6 @@ func TestMultipleOperationsLogReplicationNoFailures(t *testing.T) {
 	nodes := make([]*raft.RaftNode, 3)
 	shutdowns := make([]chan struct{}, 3)
 
-	// Start all nodes
 	for i := range 3 {
 		shutdowns[i] = make(chan struct{})
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
@@ -332,7 +330,6 @@ func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
 		t.Fatalf("Failed to submit client request: %v", err)
 	}
 
-	// Wait for initial replication
 	if !waitForLogReplication(nodes, 2, 5*time.Second) {
 		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 2")
 	}
@@ -436,7 +433,6 @@ func TestLogReplicationMinorityAlive(t *testing.T) {
 		t.Fatalf("Failed to submit client request: %v", err)
 	}
 
-	// Wait for initial replication
 	if !waitForLogReplication(nodes, 2, 5*time.Second) {
 		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 2")
 	}
@@ -569,7 +565,6 @@ func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 		t.Fatalf("Failed to submit second client request to new leader: %v", err)
 	}
 
-	// Wait for replication among remaining nodes
 	if !waitForLogReplication(nodes, 5, 5*time.Second) {
 		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 5 with new leader")
 	}
@@ -584,7 +579,7 @@ func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 	go utils.ServeBackend(int32(originalLeaderID), peers, shutdowns[originalLeaderID], nodes[originalLeaderID])
 	fmt.Printf("Restarted original leader %d (now follower)\n", originalLeaderID)
 
-	// Wait for the restarted node to catch up
+	// wait for the restarted node to catch up
 	if !waitForLogReplication(nodes, 5, 5*time.Second) {
 		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 5 after recovery")
 	}
@@ -593,7 +588,7 @@ func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 		t.Fatal("FAILURE: could not achieve right commit index of 4 within 5 seconds after recovery")
 	}
 
-	// Submit one more request to verify continued operation
+	// submit one more request to verify continued operation
 	_, err = nodes[newLeaderID].ClientRequest(raft.Set, "key5", "value5")
 	if err != nil {
 		t.Fatalf("Failed to submit final client request: %v", err)
@@ -607,7 +602,6 @@ func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 		t.Fatal("FAILURE: could not achieve commit index in 5 seconds up to index 5")
 	}
 
-	// Verify all nodes have consistent state
 	expectedState := map[string]string{
 		"key1": "value1",
 		"key2": "value2",
@@ -626,7 +620,6 @@ func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 		}
 	}
 
-	// Clean shutdown
 	for i := range 3 {
 		if shutdowns[i] != nil {
 			close(shutdowns[i])
@@ -811,7 +804,6 @@ func TestLogPersistenceAllNodesCrashAndRecover(t *testing.T) {
     nodes := make([]*raft.RaftNode, 3)
     shutdowns := make([]chan struct{}, 3)
 
-    // Start all nodes
     for i := range 3 {
         shutdowns[i] = make(chan struct{})
         nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
@@ -827,7 +819,6 @@ func TestLogPersistenceAllNodesCrashAndRecover(t *testing.T) {
         t.Fatal("FAILURE: could not achieve stable leadership in 10 seconds")
     }
 
-    // Submit several operations
     operations := []struct {
         op    int32
         key   string
@@ -848,7 +839,6 @@ func TestLogPersistenceAllNodesCrashAndRecover(t *testing.T) {
         time.Sleep(100 * time.Millisecond)
     }
 
-    // Wait for replication
     if !waitForLogReplication(nodes, 6, 5*time.Second) {
         t.Fatal("FAILURE: log replication could not be achieved in 5 seconds")
     }
@@ -908,7 +898,6 @@ func TestLogPersistenceAllNodesCrashAndRecover(t *testing.T) {
         time.Sleep(20 * time.Millisecond)
     }
 
-    // Wait for replication of new operations
     if !waitForLogReplication(nodes, 8, 5*time.Second) {
         t.Fatal("FAILURE: log replication could not be achieved in 5 seconds after new operations")
     }
@@ -975,7 +964,7 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 		t.Fatal("FAILURE: could not achieve initial log replication in 5 seconds")
 	}
 
-	// Crash numCrash followers, but not the leader
+	// crash numCrash followers, but not the leader
 	crashed := 0
 	for i := 0; i < numServers && crashed < numCrash; i++ {
 		if i != leaderID {
