@@ -199,7 +199,7 @@ func TestOneOperationLogReplicationNoFailures(t *testing.T) {
 	for i, node := range nodes {
 		sm := getNodeStateMachine(node)
 
-		if !mapsEqual(sm, expectedState) {
+		if !utils.MapsEqual(sm, expectedState) {
 			t.Fatalf("FAILURE: node %d map not expected", i)
 		}
 	}
@@ -281,7 +281,7 @@ func TestMultipleOperationsLogReplicationNoFailures(t *testing.T) {
 	for i, node := range nodes {
 		sm := getNodeStateMachine(node)
 
-		if !mapsEqual(sm, expectedState) {
+		if !utils.MapsEqual(sm, expectedState) {
 			t.Fatalf("FAILURE: node %d map not expected", i)
 		}
 	}
@@ -376,7 +376,6 @@ func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
 		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 4 after recovery")
 	}
 
-	// Verify state machines are consistent
 	expectedState := map[string]string{
 		"key1": "value1",
 		"key2": "value2",
@@ -385,7 +384,7 @@ func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
 
 	for i, node := range nodes {
 		sm := getNodeStateMachine(node)
-		if !mapsEqual(sm, expectedState) {
+		if !utils.MapsEqual(sm, expectedState) {
 			t.Fatalf("FAILURE: node %d map not expected", i)
 		}
 	}
@@ -469,12 +468,13 @@ func TestLogReplicationMinorityAlive(t *testing.T) {
 
 		sm := getNodeStateMachine(node)
 
-		if !mapsEqual(sm, expectedState) {
+		if !utils.MapsEqual(sm, expectedState) {
 			t.Fatalf("FAILURE: node %d map not expected", i)
 		}
 	}
 
 	close(shutdowns[leaderID])
+
 	time.Sleep(1*time.Second)
 }
 
@@ -579,7 +579,6 @@ func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 	go utils.ServeBackend(int32(originalLeaderID), peers, shutdowns[originalLeaderID], nodes[originalLeaderID])
 	fmt.Printf("Restarted original leader %d (now follower)\n", originalLeaderID)
 
-	// wait for the restarted node to catch up
 	if !waitForLogReplication(nodes, 5, 5*time.Second) {
 		t.Fatal("FAILURE: could not achieve log replication in 5 seconds up to length 5 after recovery")
 	}
@@ -588,7 +587,6 @@ func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 		t.Fatal("FAILURE: could not achieve right commit index of 4 within 5 seconds after recovery")
 	}
 
-	// submit one more request to verify continued operation
 	_, err = nodes[newLeaderID].ClientRequest(raft.Set, "key5", "value5")
 	if err != nil {
 		t.Fatalf("Failed to submit final client request: %v", err)
@@ -615,7 +613,7 @@ func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 			continue
 		}
 		sm := getNodeStateMachine(node)
-		if !mapsEqual(sm, expectedState) {
+		if !utils.MapsEqual(sm, expectedState) {
 			t.Fatalf("FAILURE: node %d state machine not as expected. Got: %v, Expected: %v", i, sm, expectedState)
 		}
 	}
@@ -773,7 +771,7 @@ func TestLogReplicationLeaderFailureWithUncommittedThenRecovery(t *testing.T) {
 			continue
 		}
 		sm := getNodeStateMachine(node)
-		if !mapsEqual(sm, expectedState) {
+		if !utils.MapsEqual(sm, expectedState) {
 			t.Fatalf("FAILURE: node %d state machine not as expected. Got: %v, Expected: %v", i, sm, expectedState)
 		}
 	}
@@ -783,10 +781,11 @@ func TestLogReplicationLeaderFailureWithUncommittedThenRecovery(t *testing.T) {
 			close(shutdowns[i])
 		}
 	}
+
 	time.Sleep(1*time.Second)
 }
 
-func TestLogPersistenceAllNodesCrashAndRecover(t *testing.T) {
+func TestLogReplicationAllNodesCrashAndRecover(t *testing.T) {
     fmt.Println("Running:", t.Name())
 
     os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
@@ -855,7 +854,7 @@ func TestLogPersistenceAllNodesCrashAndRecover(t *testing.T) {
 
     for i, node := range nodes {
         sm := getNodeStateMachine(node)
-        if !mapsEqual(sm, expectedState) {
+        if !utils.MapsEqual(sm, expectedState) {
             t.Fatalf("Before crash: node %d state machine not as expected\nGot: %v\nWant: %v", i, sm, expectedState)
         }
     }
@@ -911,7 +910,8 @@ func TestLogPersistenceAllNodesCrashAndRecover(t *testing.T) {
 
     for i, node := range nodes {
         sm := getNodeStateMachine(node)
-        if !mapsEqual(sm, expectedState) {
+		
+        if !utils.MapsEqual(sm, expectedState) {
             t.Fatalf("Final state: node %d state machine not as expected\nGot: %v\nWant: %v", i, sm, expectedState)
         }
     }
@@ -964,7 +964,6 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 		t.Fatal("FAILURE: could not achieve initial log replication in 5 seconds")
 	}
 
-	// crash numCrash followers, but not the leader
 	crashed := 0
 	for i := 0; i < numServers && crashed < numCrash; i++ {
 		if i != leaderID {
@@ -1039,7 +1038,7 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 		}
 		sm := getNodeStateMachine(node)
 
-		if !mapsEqual(sm, expectedState) {
+		if !utils.MapsEqual(sm, expectedState) {
 			t.Fatalf("FAILURE: node %d map not expected", i)
 		}
 	}
@@ -1051,15 +1050,4 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 	}
 }
 
-func mapsEqual(a, b map[string]string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for key, valA := range a {
-		valB, ok := b[key]
-		if !ok || valA != valB {
-			return false
-		}
-	}
-	return true
-}
+

@@ -51,3 +51,16 @@ func ServeBackend(nodeID int32, peers map[int32]string, shutdown chan struct{}, 
 		return
     }
 }
+
+func MapsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, valA := range a {
+		valB, ok := b[key]
+		if !ok || valA != valB {
+			return false
+		}
+	}
+	return true
+}

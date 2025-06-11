@@ -213,11 +213,11 @@ func TestLeaderFailElection(t *testing.T) {
 			close(nodes[i].Shutdown)
 		}
 	}
-	time.Sleep(1*time.Second)
+	time.Sleep(1 * time.Second)
 }
 
 // Test if a node joining the cluster becomes a follower
-func TestJoinCluster(t *testing.T) {
+func TestJoinClusterElection(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
@@ -249,7 +249,7 @@ func TestJoinCluster(t *testing.T) {
 	initialStatusDone := make(chan struct{})
 	initialStatusUpdates := checkAllStatus(initialNodesSlice, 100*time.Millisecond, initialStatusDone)
 
-	leaderID := waitForStableLeader(initialStatusUpdates, 15*time.Second)
+	leaderID := waitForStableLeader(initialStatusUpdates, 10*time.Second)
 	if leaderID == -1 {
 		t.Fatal("FAILURE: Could not elect a leader in the initial cluster")
 	}
@@ -268,14 +268,11 @@ func TestJoinCluster(t *testing.T) {
 	nodes[joiningNodeID] = raft.NewRaftNode(joiningNodeID, peers, shutdownChans[joiningNodeID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", joiningNodeID)))
 	go utils.ServeBackend(joiningNodeID, peers, shutdownChans[joiningNodeID], nodes[joiningNodeID])
 
-	// wait for the joining node to start
-	time.Sleep(2 * time.Second)
-
 	// start status checking for all nodes
 	allNodesStatusDone := make(chan struct{})
 	allNodesStatusUpdates := checkAllStatus(nodes, 100*time.Millisecond, allNodesStatusDone)
 
-	finalLeaderID := waitForStableLeader(allNodesStatusUpdates, 10*time.Second)
+	finalLeaderID := waitForStableLeader(allNodesStatusUpdates, 3*time.Second)
 	if finalLeaderID == -1 {
 		t.Fatalf("FAILURE: Cluster did not stabilize after node %d joined", joiningNodeID)
 	}
@@ -315,32 +312,31 @@ CheckLoop:
 	fmt.Printf("Leader %d status: State=%d, Term=%d\n", finalLeaderID, finalLeaderStatus.State, finalLeaderStatus.Term)
 
 	if joinedNodeStatus.State != raft.Follower {
-		t.Errorf("FAILURE: Joined node %d is not a Follower. Actual state: %d", joiningNodeID, joinedNodeStatus.State)
+		t.Fatalf("FAILURE: Joined node %d is not a Follower. Actual state: %d", joiningNodeID, joinedNodeStatus.State)
 	}
 	if joinedNodeStatus.Term != finalLeaderStatus.Term {
-		t.Errorf("FAILURE: Joined node %d term (%d) does not match leader's term (%d)",
+		t.Fatalf("FAILURE: Joined node %d term (%d) does not match leader's term (%d)",
 			joiningNodeID, joinedNodeStatus.Term, finalLeaderStatus.Term)
 	}
 	if finalLeaderStatus.Term != initialLeaderTerm {
-		t.Errorf("FAILURE: Final leader term (%d) is not equal to initial leader term (%d)",
+		t.Fatalf("FAILURE: Final leader term (%d) is not equal to initial leader term (%d)",
 			finalLeaderStatus.Term, initialLeaderTerm)
 	}
 
 	// cleanup
 	close(allNodesStatusDone)
 
-	fmt.Println("Shutting down nodes...")
-
 	for i := range numNodes {
 		if shutdownChans[i] != nil {
 			close(shutdownChans[i])
 		}
 	}
-	time.Sleep(1*time.Second)
+
+	time.Sleep(1 * time.Second)
 }
 
 // Test no leader elected if minority nodes alive
-func TestNoLeaderWithMinorityNodes(t *testing.T) {
+func TestNoLeaderElectionWithMinorityNodes(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
@@ -369,8 +365,8 @@ func TestNoLeaderWithMinorityNodes(t *testing.T) {
 	statusChan := make(chan struct{})
 	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
-	// wait then verify no leader is elected in 15 seconds
-	timer := time.NewTimer(15 * time.Second)
+	// wait then verify no leader is elected in 20 seconds
+	timer := time.NewTimer(20 * time.Second)
 	defer timer.Stop()
 
 	leaderElected := false
@@ -397,11 +393,11 @@ loop:
 	} else {
 		fmt.Println("SUCCESS: No leader was elected with minority nodes")
 	}
-	time.Sleep(1*time.Second)
+	time.Sleep(1 * time.Second)
 }
 
 // Test to make sure 1 follower failure does not trigger an election change
-func TestFollowerFailure(t *testing.T) {
+func TestElectionFollowerFailure(t *testing.T) {
 	fmt.Println("Running:", t.Name())
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
@@ -449,11 +445,12 @@ func TestFollowerFailure(t *testing.T) {
 	close(nodes[followerToKill].Shutdown)
 	fmt.Printf("Follower %d shut down\n", followerToKill)
 
-	// wait a bit for cluster to stabilize
-	time.Sleep(3 * raft.DefaultRPCTimeout * time.Second)
+	close(statusChan)
+	statusChan = make(chan struct{})
+	statusUpdates = checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
 	// leader should remain the same
-	stableLeader := waitForStableLeader(statusUpdates, 10*time.Second)
+	stableLeader := waitForStableLeader(statusUpdates, 3*time.Second)
 	if stableLeader != leader {
 		t.Errorf("FAILURE: expected leader %d to remain, but got %d", leader, stableLeader)
 	} else {
@@ -465,7 +462,7 @@ func TestFollowerFailure(t *testing.T) {
 			close(nodes[i].Shutdown)
 		}
 	}
-	time.Sleep(1*time.Second)
+	time.Sleep(1 * time.Second)
 }
 
 // Test if no leader can be elected after leader AND a follower fails
@@ -520,15 +517,15 @@ func TestLeaderAndFollowerFailElection(t *testing.T) {
 	// shutdown the previous leader
 	close(nodes[previousLeader].Shutdown)
 
-	// see if we elect a new leader in 15 seconds
+	// see if we elect a new leader in 20 seconds
 	newStatusChan := make(chan struct{})
 	nodes[previousLeader] = nil
 	nodes[followerToKill] = nil
 	newStatusUpdates := checkAllStatus(nodes, 100*time.Millisecond, newStatusChan)
 
 	var newLeader int
-	if newLeader = waitForStableLeader(newStatusUpdates, 15*time.Second); newLeader != -1 {
-		t.Fatal("FAILURE: achieved stable leadership in 15 seconds")
+	if newLeader = waitForStableLeader(newStatusUpdates, 20*time.Second); newLeader != -1 {
+		t.Fatal("FAILURE: achieved stable leadership in 20 seconds")
 	}
 
 	close(statusChan)
@@ -539,5 +536,5 @@ func TestLeaderAndFollowerFailElection(t *testing.T) {
 			close(nodes[i].Shutdown)
 		}
 	}
-	time.Sleep(1*time.Second)
+	time.Sleep(1 * time.Second)
 }

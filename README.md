@@ -1,4 +1,4 @@
-# 223b-raft
+# 223B Raft
 
 ## Generating proto code
 
@@ -6,7 +6,7 @@
 2. Reload shell: `source ~/.bashrc` (or `source ~/.zshrc` if on Mac)
 3. Run `protoc --go_out=. --go-grpc_out=. proto/raft.proto` inside `raft/` directory
 
-## Build
+## Building
 Run `go build main.go`, which creates `main.exe`
 
 ## Running 
@@ -17,5 +17,9 @@ After nodes are initialized, you can use standard input to send commands to the 
 - `set <key> <value>` to set a key-value pair
 - `delete <key> <value>` to delete a key-value pair
 
-## Tests
-Run `go test ./tests -count=1 -p=1`
+## Testing
+Do not run tests below concurrently! There will be clashes with processes running on the same port.
+
+- Running just leader election tests: `go test ./tests -run Election -count=1 -p=1 -failfast`
+- Running just replication tests: `go test ./tests -run Replication -count=1 -p=1 -failfast`
+- Running just compaction tests: `go test ./tests -run Compaction -count=1 -p=1 -failfast`
