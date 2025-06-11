@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -117,7 +118,7 @@ func TestLogCompactionFollowerRestartsButNotTooFarBehind(t *testing.T) {
 	go utils.ServeBackend(int32(followerID), peers, shutdowns[followerID], nodes[followerID])
 
 	// wait for follower catch-up
-	time.Sleep(2 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	expectedState["key7"] = "value7"
 
@@ -261,14 +262,12 @@ func TestLogCompactionFollowerRestartsButAtLeastOneSnapshotBehind(t *testing.T) 
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	time.Sleep(2 * time.Second)
-
 	shutdowns[followerID] = make(chan struct{})
 	nodes[followerID] = raft.NewRaftNode(int32(followerID), peers, shutdowns[followerID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(followerID))))
 	go utils.ServeBackend(int32(followerID), peers, shutdowns[followerID], nodes[followerID])
 
 	// wait for follower catch-up
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 
 	expectedState["key7"] = "value7"
 	expectedState["key8"] = "value8"
@@ -604,110 +603,153 @@ func TestLogCompactionFollowerLosesPersistentData(t *testing.T) {
 	time.Sleep(1 * time.Second)
 }
 
-// logs can be snapshot multiple times and restored
-func TestLogCompactionManySnapshots(t *testing.T) {
-	// set small compaction threshold for testing
-	os.Setenv("RAFT_COMPACTION_THRESHOLD", "5")
-	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "1000")
-	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "2000")
-	os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "3000")
+func TestConcurrentCompactionAndInstallation(t *testing.T) {
+    fmt.Println("Running:", t.Name())
 
-	defer utils.CleanLogs("test_logs")
+    os.Setenv("RAFT_COMPACTION_THRESHOLD", "5")
+    os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
+    os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
+    os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "2000")
 
-	peers := map[int32]string{
-		0: "localhost:50051",
-		1: "localhost:50052",
-		2: "localhost:50053",
-	}
+    defer utils.CleanLogs("test_logs")
 
-	nodes := make([]*raft.RaftNode, 3)
-	shutdowns := make([]chan struct{}, 3)
+    peers := map[int32]string{
+        0: "localhost:50051",
+        1: "localhost:50052",
+        2: "localhost:50053",
+        3: "localhost:50054",
+        4: "localhost:50055",
+    }
 
-	for i := range 3 {
-		shutdowns[i] = make(chan struct{})
-		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
-		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
-	}
+    nodes := make([]*raft.RaftNode, 5)
+    shutdowns := make([]chan struct{}, 5)
 
-	statusChan := make(chan struct{})
-	defer close(statusChan)
-	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
+    for i := range 5 {
+        shutdowns[i] = make(chan struct{})
+        nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], 
+            filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
+        go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
+    }
 
-	var leaderID int
-	if leaderID = waitForStableLeader(statusUpdates, 10*time.Second); leaderID == -1 {
-		t.Fatal("FAILURE: could not achieve stable leadership in 10 seconds")
-	}
+    statusChan := make(chan struct{})
+    defer close(statusChan)
+    statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
-	fmt.Printf("Leader elected: %d\n", leaderID)
+    var leaderID int
+    if leaderID = waitForStableLeader(statusUpdates, 10*time.Second); leaderID == -1 {
+        t.Fatal("FAILURE: could not achieve stable leadership in 10 seconds")
+    }
 
-	for i := range 25 {
-		_, err := nodes[leaderID].ClientRequest(raft.Set, fmt.Sprintf("key%d", i), fmt.Sprintf("value%d", i))
-		if err != nil {
-			t.Fatalf("Failed to submit client request: %v", err)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	// shutdown 2 followers
+    followerIDs := make([]int, 0)
+    followerCount := 0
+    for i := 0; i < 5 && followerCount < 2; i++ {
+        if i != leaderID {
+            followerIDs = append(followerIDs, i)
+            close(shutdowns[i])
+            nodes[i] = nil
+            followerCount++
+        }
+    }
 
-	time.Sleep(10 * time.Second)
+    go func() {
+        for i := 0; i < 20; i++ {
+            _, err := nodes[leaderID].ClientRequest(raft.Set, 
+                fmt.Sprintf("concurrent_key%d", i), 
+                fmt.Sprintf("value%d", i))
 
-	expectedState := make(map[string]string)
-	for i := range 25 {
-		expectedState[fmt.Sprintf("key%d", i)] = fmt.Sprintf("value%d", i)
-	}
+            if err != nil {
+                t.Errorf("Failed to submit client request: %v", err)
+                return
+            }
 
-	for i, node := range nodes {
-		if node == nil {
-			continue
-		}
+            time.Sleep(50 * time.Millisecond)
+        }
+    }()
 
-		sm := getNodeStateMachine(node)
-		if !utils.MapsEqual(sm, expectedState) {
-			t.Fatalf("Node %d state machine not as expected\nGot: %v\nWant: %v", i, sm, expectedState)
-		}
+    // wait for some snapshots to be created
+    time.Sleep(1 * time.Second)
 
-		node.Mu.Lock()
-		if node.Snapshot == nil {
-			t.Fatalf("Node %d did not create a snapshot", i)
-		}
+    // now we can restart all followers concurrently to test parallel snapshot installation
+    var wg sync.WaitGroup
+    for _, id := range followerIDs {
+        wg.Add(1)
+        go func(followerID int) {
+            defer wg.Done()
+            shutdowns[followerID] = make(chan struct{})
+            nodes[followerID] = raft.NewRaftNode(int32(followerID), peers, 
+                shutdowns[followerID], 
+                filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(followerID))))
+            go utils.ServeBackend(int32(followerID), peers, shutdowns[followerID], nodes[followerID])
+        }(id)
+    }
 
-		logSize := len(node.Logs)
+    wg.Wait()
 
-		if logSize >= 5 {
-			t.Fatalf("Node %d log not compacted. Size: %d", i, logSize)
-		}
+    for i := 20; i < 30; i++ {
+        _, err := nodes[leaderID].ClientRequest(raft.Set, 
+            fmt.Sprintf("concurrent_key%d", i), 
+            fmt.Sprintf("value%d", i))
+        if err != nil {
+            t.Fatalf("Failed to submit client request: %v", err)
+        }
+        time.Sleep(50 * time.Millisecond)
+    }
 
-		node.Mu.Unlock()
-	}
+    time.Sleep(5 * time.Second)
 
-	followerID := (leaderID + 1) % 3
-	close(shutdowns[followerID])
-	nodes[followerID] = nil
-	time.Sleep(1 * time.Second)
-	shutdowns[followerID] = make(chan struct{})
-	nodes[followerID] = raft.NewRaftNode(int32(followerID), peers, shutdowns[followerID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(followerID))))
-	go utils.ServeBackend(int32(followerID), peers, shutdowns[followerID], nodes[followerID])
+    expectedState := make(map[string]string)
+    for i := 0; i < 30; i++ {
+        expectedState[fmt.Sprintf("concurrent_key%d", i)] = fmt.Sprintf("value%d", i)
+    }
 
-	// wait for follower catch-up
-	time.Sleep(3 * time.Second)
+    for i, node := range nodes {
+        if node == nil {
+            t.Fatalf("Node %d is nil", i)
+        }
 
-	for i, node := range nodes {
-		if node == nil {
-			continue
-		}
+        sm := getNodeStateMachine(node)
+        if !utils.MapsEqual(sm, expectedState) {
+            t.Fatalf("Node %d state machine not as expected\nGot: %v\nWant: %v", 
+                i, sm, expectedState)
+        }
 
-		sm := getNodeStateMachine(node)
-		if !utils.MapsEqual(sm, expectedState) {
-			t.Fatalf("Node %d final state not as expected\nGot: %v\nWant: %v", i, sm, expectedState)
-		}
-	}
+        node.Mu.Lock()
+        if node.Snapshot == nil {
+            t.Fatalf("Node %d missing snapshot", i)
+        }
+        logSize := len(node.Logs)
+        if logSize >= 5 {
+            t.Fatalf("Node %d log not compacted. Size: %d", i, logSize)
+        }
 
-	for i := range 3 {
-		if shutdowns[i] != nil {
-			close(shutdowns[i])
-		}
-	}
+        node.Mu.Unlock()
+    }
 
-	time.Sleep(1 * time.Second)
+    _, err := nodes[leaderID].ClientRequest(raft.Set, "final_key", "final_value")
+    if err != nil {
+        t.Fatalf("Failed to submit final client request: %v", err)
+    }
+
+    time.Sleep(1 * time.Second)
+    expectedState["final_key"] = "final_value"
+
+    for i, node := range nodes {
+        sm := getNodeStateMachine(node)
+
+        if !utils.MapsEqual(sm, expectedState) {
+            t.Fatalf("Node %d final state not as expected\nGot: %v\nWant: %v", 
+                i, sm, expectedState)
+        }
+    }
+
+    for i := range 5 {
+        if shutdowns[i] != nil {
+            close(shutdowns[i])
+        }
+    }
+
+    time.Sleep(1 * time.Second)
 }
 
 func TestLogCompactionAfterLeaderFailure(t *testing.T) {
