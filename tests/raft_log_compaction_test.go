@@ -837,8 +837,14 @@ func TestLogCompactionAfterLeaderFailure(t *testing.T) {
     close(shutdowns[originalLeaderID])
     nodes[originalLeaderID] = nil
 
-	// wait for new leader elected (at most 10 seconds)
-    time.Sleep(10 * time.Second)
+	// start status checking
+	statusChan = make(chan struct{})
+	statusUpdates = checkAllStatus(nodes, 100*time.Millisecond, statusChan)
+
+	// wait for stable leader
+	if waitForStableLeader(statusUpdates, 10*time.Second) == -1 {
+		t.Fatalf("FAILURE: could not achieve stable leadership in 10 seconds")
+	}
 
     var newLeaderID = -1
     for i, node := range nodes {
