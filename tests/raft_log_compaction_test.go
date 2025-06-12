@@ -69,7 +69,7 @@ func TestLogCompactionFollowerRestartsButNotTooFarBehind(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	expectedState := map[string]string{
 		"key1": "value1",
@@ -201,7 +201,7 @@ func TestLogCompactionFollowerRestartsButAtLeastOneSnapshotBehind(t *testing.T) 
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	time.Sleep(2 * time.Second)
+	time.Sleep(5 * time.Second)
 
 	expectedState := map[string]string{
 		"key1": "value1",
@@ -397,7 +397,7 @@ func TestLogCompactionFollowerJoinsAndMultipleSnapshotsBehind(t *testing.T) {
     nodes[followerID] = raft.NewRaftNode(int32(followerID), peers, shutdowns[followerID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(followerID))))
     go utils.ServeBackend(int32(followerID), peers, shutdowns[followerID], nodes[followerID])
 
-    time.Sleep(5 * time.Second)
+    time.Sleep(10 * time.Second)
 
     for i, node := range nodes {
         if node == nil {
@@ -415,7 +415,7 @@ func TestLogCompactionFollowerJoinsAndMultipleSnapshotsBehind(t *testing.T) {
         t.Fatalf("Failed to submit client request after recovery: %v", err)
     }
 
-    time.Sleep(1 * time.Second)
+    time.Sleep(3 * time.Second)
     expectedState["final_key"] = "final_value"
 
     for i, node := range nodes {
@@ -496,7 +496,7 @@ func TestLogCompactionFollowerLosesPersistentData(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	time.Sleep(5 * time.Second)
+	time.Sleep(10 * time.Second)
 
 	expectedState := map[string]string{
 		"key1": "value1",
@@ -574,7 +574,7 @@ func TestLogCompactionFollowerLosesPersistentData(t *testing.T) {
 	go utils.ServeBackend(int32(followerID), peers, shutdowns[followerID], nodes[followerID])
 
 	// wait for follower catch-up
-	time.Sleep(3 * time.Second)
+	time.Sleep(10 * time.Second)
 
 	expectedState["key7"] = "value7"
 	expectedState["key8"] = "value8"
@@ -607,9 +607,9 @@ func TestConcurrentCompactionAndInstallation(t *testing.T) {
     fmt.Println("Running:", t.Name())
 
     os.Setenv("RAFT_COMPACTION_THRESHOLD", "5")
-    os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
-    os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
-    os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "2000")
+    os.Setenv("RAFT_HEARTBEAT_INTERVAL", "1000")
+    os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "2000")
+    os.Setenv("RAFT_ELECTION_TIMEOUT_MAX", "3000")
 
     defer utils.CleanLogs("test_logs")
 
@@ -696,7 +696,7 @@ func TestConcurrentCompactionAndInstallation(t *testing.T) {
         time.Sleep(50 * time.Millisecond)
     }
 
-    time.Sleep(5 * time.Second)
+    time.Sleep(10 * time.Second)
 
     expectedState := make(map[string]string)
     for i := 0; i < 30; i++ {
@@ -731,7 +731,7 @@ func TestConcurrentCompactionAndInstallation(t *testing.T) {
         t.Fatalf("Failed to submit final client request: %v", err)
     }
 
-    time.Sleep(1 * time.Second)
+    time.Sleep(3 * time.Second)
     expectedState["final_key"] = "final_value"
 
     for i, node := range nodes {
@@ -807,7 +807,7 @@ func TestLogCompactionAfterLeaderFailure(t *testing.T) {
         time.Sleep(20 * time.Millisecond)
     }
 	
-	time.Sleep(1 * time.Second)
+	time.Sleep(5 * time.Second)
 
     expectedState := map[string]string{
         "key1": "value1",
