@@ -1,4 +1,4 @@
-# 223B Raft
+# GoRaft
 
 ## Generating proto code
 
