@@ -15,7 +15,8 @@ Run `./main --id <number>` to start a node
 
 After nodes are initialized, you can use standard input to send commands to the leader for testing:
 - `set <key> <value>` to set a key-value pair
-- `delete <key> <value>` to delete a key-value pair
+- `delete <key>` to delete a key
+- `get <key>` to get a value for a key, or it will say it does not exist
 
 We decided to force all reads/gets through the leader to provide strong consistency guarantees.
 
