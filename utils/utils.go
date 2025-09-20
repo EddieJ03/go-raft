@@ -6,8 +6,8 @@ import (
 	"net"
 	"os"
 
-	"github.com/EddieJ03/223b-raft/raft"
-	pb "github.com/EddieJ03/223b-raft/raft/github.com/EddieJ03/223b-raft"
+	"github.com/EddieJ03/go-raft/raft"
+	pb "github.com/EddieJ03/go-raft/raft/github.com/EddieJ03/go-raft"
 	"google.golang.org/grpc"
 )
 

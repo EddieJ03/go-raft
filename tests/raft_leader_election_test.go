@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	raft "github.com/EddieJ03/223b-raft/raft"
-	utils "github.com/EddieJ03/223b-raft/utils"
+	raft "github.com/EddieJ03/go-raft/raft"
+	utils "github.com/EddieJ03/go-raft/utils"
 )
 
 const STABILITY_VALUE int = 3

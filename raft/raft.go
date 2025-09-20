@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/EddieJ03/223b-raft/raft/github.com/EddieJ03/223b-raft"
+	pb "github.com/EddieJ03/go-raft/raft/github.com/EddieJ03/go-raft"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
