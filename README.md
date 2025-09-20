@@ -1,5 +1,8 @@
 # GoRaft
 
+![video1680837800 (1)](https://github.com/user-attachments/assets/3a7dbbee-228d-4f04-a7bb-9a7ae6a8e68b)
+
+
 ## Generating proto code
 
 1. First run `export PATH="$PATH:$(go env GOPATH)/bin"` in the root directory
@@ -26,3 +29,5 @@ Do not run tests below concurrently! There will be clashes with processes runnin
 - Running just leader election tests: `go test ./tests -run Election -count=1 -p=1 -failfast`
 - Running just replication tests: `go test ./tests -run Replication -count=1 -p=1 -failfast`
 - Running just compaction tests: `go test ./tests -run Compaction -count=1 -p=1 -failfast`
+
+Also note that these tests can be flaky, but should never consistently fail.
