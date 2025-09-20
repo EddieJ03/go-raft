@@ -1,7 +1,6 @@
 # GoRaft
 
-![video1680837800 (1)](https://github.com/user-attachments/assets/3a7dbbee-228d-4f04-a7bb-9a7ae6a8e68b)
-
+![Untitled 2](https://github.com/user-attachments/assets/b1a0823a-79ea-4851-880c-20832db04e8f)
 
 ## Generating proto code
 
