@@ -32,6 +32,7 @@ const (
 	Set int32 = iota
 	Delete
 	NoOp
+	Get
 )
 
 type Log struct {

@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -51,20 +53,35 @@ func main() {
 
 	go func() {
 		time.Sleep(1 * time.Second) // Wait for the node to start
+		reader := bufio.NewReader(os.Stdin)
 		for {
 			fmt.Print("> ")
-			var op, k, v string
-			_, err := fmt.Scanf("%s %s %s\n", &op, &k, &v)
+			line, err := reader.ReadString('\n')
 			if err != nil {
 				log.Printf("Error reading command: %v", err)
 				continue
 			}
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				log.Printf("Usage: set <key> <value> | delete <key> | get <key>")
+				continue
+			}
+			op, k, v := fields[0], fields[1], ""
+			if len(fields) > 2 {
+				v = fields[2]
+			}
 			var cmd int32
 			switch op {
 			case "set":
+				if v == "" {
+					log.Printf("Usage: set <key> <value>")
+					continue
+				}
 				cmd = raft.Set
 			case "delete":
 				cmd = raft.Delete
+			case "get":
+				cmd = raft.Get
 			default:
 				log.Printf("Unknown command: %s", op)
 				continue

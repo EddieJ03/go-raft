@@ -17,6 +17,8 @@ After nodes are initialized, you can use standard input to send commands to the 
 - `set <key> <value>` to set a key-value pair
 - `delete <key> <value>` to delete a key-value pair
 
+We decided to force all reads/gets through the leader to provide strong consistency guarantees.
+
 ## Testing
 Do not run tests below concurrently! There will be clashes with processes running on the same port.
 

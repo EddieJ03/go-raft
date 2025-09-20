@@ -12,6 +12,15 @@ func (rn *RaftNode) ClientRequest(op int32, key, value string) (string, error) {
 	if rn.State != Leader {
 		return fmt.Sprintf("%d is the leader", rn.leaderId), errors.New("not the leader")
 	}
+
+	if op == Get {
+		val, ok := rn.StateMachine[key]
+		if !ok {
+			return fmt.Sprintf("Key '%s' not found", key), nil
+		}
+		return fmt.Sprintf("%s", val), nil
+	}
+
 	entry := Log{
 		Term:  rn.CurrentTerm,
 		Op:    op,
