@@ -30,11 +30,11 @@ An implementation of the Raft consensus protocol, with a simple CLI to interact 
 2. Reload shell: `source ~/.bashrc` (or `source ~/.zshrc` if on Mac)
 3. Run `protoc --go_out=. --go-grpc_out=. proto/raft.proto` inside `raft/` directory
 
-Run `go build main.go`, which creates `main.exe`
+Run `go build goraft.go`, which creates `goraft.exe`
 
 ## Running CLI
-Run `./main --id <number>` to start a node
-- `main` by default loads in the address of each node from `config.yaml` 
+Run `./goraft --id <number>` to start a node
+- `goraft` by default loads in the address of each node from `config.yaml` 
 
 After nodes are initialized, you can use standard input to send commands to the leader for testing:
 - `set <key> <value>` to set a key-value pair
