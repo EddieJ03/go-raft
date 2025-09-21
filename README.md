@@ -1,6 +1,25 @@
 # GoRaft
 
-An implementation of the Raft consensus protocol, with a simple CLI to interact with it. Supports `Set`, `Delete`, and `Get` operations on key-value pairs. All operations go through the leader to provide strong consistency guarantees.
+An implementation of the Raft consensus protocol, with a simple CLI to interact with it. Supports `Set`, `Delete`, and `Get` operations on key-value pairs. All operations go through the leader to provide strong consistency guarantees. 
+
+* **Heartbeat interval**
+
+  * Default: `1s`
+  * Override with:
+
+    ```bash
+    export RAFT_HEARTBEAT_INTERVAL=1000   # value in milliseconds
+    ```
+
+* **Election timeout**
+
+  * Default: random value between `1.5s` and `3s`
+  * Override with:
+
+    ```bash
+    export RAFT_ELECTION_TIMEOUT_MIN=1500   # value in milliseconds
+    export RAFT_ELECTION_TIMEOUT_MAX=3000
+    ```
 
 ![video1632731170](https://github.com/user-attachments/assets/9749489b-10d3-4b0d-ace0-aed1d7fa8ae7)
 
