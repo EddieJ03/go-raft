@@ -20,8 +20,7 @@ An implementation of the Raft consensus protocol, with a simple CLI to interact 
     export RAFT_ELECTION_TIMEOUT_MIN=1500   # value in milliseconds
     export RAFT_ELECTION_TIMEOUT_MAX=3000
     ```
-
-![video1632731170](https://github.com/user-attachments/assets/9749489b-10d3-4b0d-ace0-aed1d7fa8ae7)
+![Untitled](https://github.com/user-attachments/assets/608c2a82-2f64-4e0a-9828-d4fa6d4cbe6e)
 
 ## Building
 
