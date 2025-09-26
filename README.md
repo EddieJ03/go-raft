@@ -41,10 +41,8 @@ After nodes are initialized, you can use standard input to send commands to the 
 - `get <key>` to get a value for a key, or it will say it does not exist
 
 ## Testing
-Do not run tests below concurrently! There will be clashes with processes running on the same port.
+Do not run tests below concurrently! There will be clashes with processes running on the same port. To allow for re-trying flaky tests automatically, `gotestsum` is used.
 
-- Running just leader election tests: `go test ./tests -run Election -count=1 -p=1 -failfast`
-- Running just replication tests: `go test ./tests -run Replication -count=1 -p=1 -failfast`
-- Running just compaction tests: `go test ./tests -run Compaction -count=1 -p=1 -failfast`
-
-Also note that these tests can be flaky, but should never consistently fail.
+- Running just leader election tests: `go run gotest.tools/gotestsum@latest --rerun-fails --format testname  --packages=./tests -- -run Election -count=1 -p=1`
+- Running just replication tests: `go run gotest.tools/gotestsum@latest --rerun-fails --format testname  --packages=./tests -- -run Replication -count=1 -p=1`
+- Running just compaction tests: `go run gotest.tools/gotestsum@latest --rerun-fails --format testname  --packages=./tests -- -run Compaction -count=1 -p=1 `

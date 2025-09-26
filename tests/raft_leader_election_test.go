@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -118,6 +119,7 @@ func waitForStableLeader(statusChan chan []TestNodeStatus, timeout time.Duration
 // Test if leadership can be established within 10 seconds, no failures
 func TestLeaderElection(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1 * time.Second)
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -137,29 +139,25 @@ func TestLeaderElection(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		shutdown := make(chan struct{})
 		nodes[i] = raft.NewRaftNode(int32(i+1), peers, shutdown, filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i+1))))
+		defer close(nodes[i].Shutdown)
 		go utils.ServeBackend(int32(i+1), peers, shutdown, nodes[i])
 	}
 
 	// start status checking
 	statusChan := make(chan struct{})
+	defer close(statusChan)
 	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
 	// wait for stable leader
 	if waitForStableLeader(statusUpdates, 10*time.Second) == -1 {
 		t.Error("FAILURE: could not achieve stable leadership in 10 seconds")
 	}
-
-	close(statusChan)
-
-	// close each backend
-	for i := range 3 {
-		close(nodes[i].Shutdown)
-	}
 }
 
 // Test if leadership can be established after leader fails
 func TestLeaderFailElection(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1 * time.Second)
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -175,15 +173,18 @@ func TestLeaderFailElection(t *testing.T) {
 	}
 
 	nodes := make([]*raft.RaftNode, 3)
+	shutdownOnce := make([]sync.Once, len(peers))
 
 	for i := range 3 {
 		shutdown := make(chan struct{})
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdown, filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i+1))))
+		defer shutdownOnce[i].Do(func() { close(nodes[i].Shutdown) })
 		go utils.ServeBackend(int32(i), peers, shutdown, nodes[i])
 	}
 
 	// start status checking
 	statusChan := make(chan struct{})
+	defer close(statusChan)
 	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
 	var previousLeader int
@@ -194,31 +195,25 @@ func TestLeaderFailElection(t *testing.T) {
 	fmt.Printf("Previous leader: %d\n", previousLeader)
 
 	// shutdown the previous leader
-	close(nodes[previousLeader].Shutdown)
+	shutdownOnce[previousLeader].Do(func() { close(nodes[previousLeader].Shutdown) })
 
 	// wait for shutdown
 	time.Sleep(2 * raft.DefaultRPCTimeout * time.Second)
 
 	newStatusChan := make(chan struct{})
+	defer close(newStatusChan)
 	nodes[previousLeader] = nil
 	newStatusUpdates := checkAllStatus(nodes, 100*time.Millisecond, newStatusChan)
 
 	if leader := waitForStableLeader(newStatusUpdates, 10*time.Second); leader == -1 || leader == previousLeader {
 		t.Errorf("FAILURE: no leader or previous leader is still active after shutdown %d", leader)
 	}
-
-	// close each backend server
-	for i := range 3 {
-		if i != previousLeader {
-			close(nodes[i].Shutdown)
-		}
-	}
-	time.Sleep(1 * time.Second)
 }
 
 // Test if a node joining the cluster becomes a follower
 func TestJoinClusterElection(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1 * time.Second)
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -241,6 +236,7 @@ func TestJoinClusterElection(t *testing.T) {
 	for i := range initialNodesSlice {
 		id := int32(i)
 		shutdownChans[i] = make(chan struct{})
+		defer close(shutdownChans[i])
 		nodes[i] = raft.NewRaftNode(id, peers, shutdownChans[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i+1))))
 		initialNodesSlice[i] = nodes[i]
 		go utils.ServeBackend(id, peers, shutdownChans[i], nodes[i])
@@ -265,11 +261,13 @@ func TestJoinClusterElection(t *testing.T) {
 	joiningNodeID := int32(numNodes - 1)
 	fmt.Printf("Starting joining node: %d\n", joiningNodeID)
 	shutdownChans[joiningNodeID] = make(chan struct{})
+	defer close(shutdownChans[joiningNodeID])
 	nodes[joiningNodeID] = raft.NewRaftNode(joiningNodeID, peers, shutdownChans[joiningNodeID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", joiningNodeID)))
 	go utils.ServeBackend(joiningNodeID, peers, shutdownChans[joiningNodeID], nodes[joiningNodeID])
 
 	// start status checking for all nodes
 	allNodesStatusDone := make(chan struct{})
+	defer close(allNodesStatusDone)
 	allNodesStatusUpdates := checkAllStatus(nodes, 100*time.Millisecond, allNodesStatusDone)
 
 	finalLeaderID := waitForStableLeader(allNodesStatusUpdates, 3*time.Second)
@@ -322,22 +320,12 @@ CheckLoop:
 		t.Fatalf("FAILURE: Final leader term (%d) is not equal to initial leader term (%d)",
 			finalLeaderStatus.Term, initialLeaderTerm)
 	}
-
-	// cleanup
-	close(allNodesStatusDone)
-
-	for i := range numNodes {
-		if shutdownChans[i] != nil {
-			close(shutdownChans[i])
-		}
-	}
-
-	time.Sleep(1 * time.Second)
 }
 
 // Test no leader elected if minority nodes alive
 func TestNoLeaderElectionWithMinorityNodes(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1 * time.Second)
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -356,6 +344,7 @@ func TestNoLeaderElectionWithMinorityNodes(t *testing.T) {
 	// only start 1 node
 	shutdown := make(chan struct{})
 	nodes[0] = raft.NewRaftNode(1, peers, shutdown, filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", 1)))
+	defer close(nodes[0].Shutdown)
 	go utils.ServeBackend(1, peers, shutdown, nodes[0])
 
 	nodes[1] = nil
@@ -363,6 +352,7 @@ func TestNoLeaderElectionWithMinorityNodes(t *testing.T) {
 
 	// start status checking
 	statusChan := make(chan struct{})
+	defer close(statusChan)
 	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
 	// wait then verify no leader is elected in 20 seconds
@@ -385,20 +375,17 @@ loop:
 		}
 	}
 
-	close(statusChan)
-	close(nodes[0].Shutdown)
-
 	if leaderElected {
 		t.Error("FAIL: A leader was elected but only minority alive")
 	} else {
 		fmt.Println("SUCCESS: No leader was elected with minority nodes")
 	}
-	time.Sleep(1 * time.Second)
 }
 
 // Test to make sure 1 follower failure does not trigger an election change
 func TestElectionFollowerFailure(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1 * time.Second)
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -413,10 +400,12 @@ func TestElectionFollowerFailure(t *testing.T) {
 		2: "localhost:50053",
 	}
 
-	nodes := make([]*raft.RaftNode, 3)
+	nodes := make([]*raft.RaftNode, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-	for i := range 3 {
+	for i := range len(peers) {
 		shutdown := make(chan struct{})
+		defer shutdownOnce[i].Do(func() { close(shutdown) })
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdown, filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i+1))))
 		go utils.ServeBackend(int32(i), peers, shutdown, nodes[i])
 	}
@@ -442,7 +431,7 @@ func TestElectionFollowerFailure(t *testing.T) {
 	}
 
 	// shut down a follower
-	close(nodes[followerToKill].Shutdown)
+	shutdownOnce[followerToKill].Do(func() { close(nodes[followerToKill].Shutdown) })
 	fmt.Printf("Follower %d shut down\n", followerToKill)
 
 	close(statusChan)
@@ -456,18 +445,12 @@ func TestElectionFollowerFailure(t *testing.T) {
 	} else {
 		fmt.Printf("Leader %d is still active after follower failure\n", stableLeader)
 	}
-
-	for i := range 3 {
-		if i != followerToKill {
-			close(nodes[i].Shutdown)
-		}
-	}
-	time.Sleep(1 * time.Second)
 }
 
 // Test if no leader can be elected after leader AND a follower fails
 func TestLeaderAndFollowerFailElection(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1 * time.Second)
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -482,16 +465,19 @@ func TestLeaderAndFollowerFailElection(t *testing.T) {
 		2: "localhost:50053",
 	}
 
-	nodes := make([]*raft.RaftNode, 3)
+	nodes := make([]*raft.RaftNode, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-	for i := range 3 {
+	for i := range len(peers) {
 		shutdown := make(chan struct{})
+		defer shutdownOnce[i].Do(func() { close(shutdown) })
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdown, filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i+1))))
 		go utils.ServeBackend(int32(i), peers, shutdown, nodes[i])
 	}
 
 	// start status checking
 	statusChan := make(chan struct{})
+	defer close(statusChan)
 	statusUpdates := checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
 	var previousLeader int
@@ -510,15 +496,16 @@ func TestLeaderAndFollowerFailElection(t *testing.T) {
 		}
 	}
 
-	close(nodes[followerToKill].Shutdown)
+	shutdownOnce[followerToKill].Do(func() { close(nodes[followerToKill].Shutdown) })
 
 	fmt.Printf("Follower killed: %d\n", followerToKill)
 
 	// shutdown the previous leader
-	close(nodes[previousLeader].Shutdown)
+	shutdownOnce[previousLeader].Do(func() { close(nodes[previousLeader].Shutdown) })
 
 	// see if we elect a new leader in 20 seconds
 	newStatusChan := make(chan struct{})
+	defer close(newStatusChan)
 	nodes[previousLeader] = nil
 	nodes[followerToKill] = nil
 	newStatusUpdates := checkAllStatus(nodes, 100*time.Millisecond, newStatusChan)
@@ -527,14 +514,4 @@ func TestLeaderAndFollowerFailElection(t *testing.T) {
 	if newLeader = waitForStableLeader(newStatusUpdates, 20*time.Second); newLeader != -1 {
 		t.Fatal("FAILURE: achieved stable leadership in 20 seconds")
 	}
-
-	close(statusChan)
-	close(newStatusChan)
-
-	for i := range 3 {
-		if nodes[i] != nil {
-			close(nodes[i].Shutdown)
-		}
-	}
-	time.Sleep(1 * time.Second)
 }

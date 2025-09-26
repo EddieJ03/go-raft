@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -144,6 +145,7 @@ func waitForLogReplication(nodes []*raft.RaftNode, expectedLength int, timeout t
 
 func TestOneOperationLogReplicationNoFailures(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1*time.Second)
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -157,11 +159,12 @@ func TestOneOperationLogReplicationNoFailures(t *testing.T) {
 		2: "localhost:50053",
 	}
 
-	nodes := make([]*raft.RaftNode, 3)
-	shutdowns := make([]chan struct{}, 3)
+	nodes := make([]*raft.RaftNode, len(peers))
+	shutdowns := make([]chan struct{}, len(peers))
 
-	for i := range 3 {
+	for i := range len(peers) {
 		shutdowns[i] = make(chan struct{})
+		defer close(shutdowns[i])
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
 		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
 	}
@@ -203,15 +206,11 @@ func TestOneOperationLogReplicationNoFailures(t *testing.T) {
 			t.Fatalf("FAILURE: node %d map not expected", i)
 		}
 	}
-
-	for i := range 3 {
-		close(shutdowns[i])
-	}
-	time.Sleep(1*time.Second)
 }
 
 func TestMultipleOperationsLogReplicationNoFailures(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1*time.Second)
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -225,11 +224,12 @@ func TestMultipleOperationsLogReplicationNoFailures(t *testing.T) {
 		2: "localhost:50053",
 	}
 
-	nodes := make([]*raft.RaftNode, 3)
-	shutdowns := make([]chan struct{}, 3)
+	nodes := make([]*raft.RaftNode, len(peers))
+	shutdowns := make([]chan struct{}, len(peers))
 
-	for i := range 3 {
+	for i := range len(peers) {
 		shutdowns[i] = make(chan struct{})
+		defer close(shutdowns[i])
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
 		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
 	}
@@ -285,15 +285,11 @@ func TestMultipleOperationsLogReplicationNoFailures(t *testing.T) {
 			t.Fatalf("FAILURE: node %d map not expected", i)
 		}
 	}
-
-	for i := range 3 {
-		close(shutdowns[i])
-	}
-	time.Sleep(1*time.Second)
 }
 
 func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1*time.Second)
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -307,11 +303,13 @@ func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
 		2: "localhost:50053",
 	}
 
-	nodes := make([]*raft.RaftNode, 3)
-	shutdowns := make([]chan struct{}, 3)
+	nodes := make([]*raft.RaftNode, len(peers))
+	shutdowns := make([]chan struct{}, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-	for i := range 3 {
+	for i := range len(peers) {
 		shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func(){ close(shutdowns[i]) })
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
 		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
 	}
@@ -343,7 +341,7 @@ func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
 		}
 	}
 
-	close(shutdowns[followerID])
+	shutdownOnce[followerID].Do(func(){ close(shutdowns[followerID]) })
 	nodes[followerID] = nil
 	fmt.Printf("Killed follower %d\n", followerID)
 	time.Sleep(1 * time.Second) // sleep to further ensure killed node is cleaned
@@ -366,8 +364,9 @@ func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
 		t.Fatal("FAILURE: could not achieve right commit index of 3 within 5 seconds")
 	}
 
-	// restart
+	// restart killed follower
 	shutdowns[followerID] = make(chan struct{})
+	defer close(shutdowns[followerID])
 	nodes[followerID] = raft.NewRaftNode(int32(followerID), peers, shutdowns[followerID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(followerID))))
 	go utils.ServeBackend(int32(followerID), peers, shutdowns[followerID], nodes[followerID])
 	fmt.Printf("Restarted follower %d\n", followerID)
@@ -388,14 +387,11 @@ func TestLogReplicationSingleFollowerFailureThenRecovery(t *testing.T) {
 			t.Fatalf("FAILURE: node %d map not expected", i)
 		}
 	}
-
-	for i := range 3 {
-		close(shutdowns[i])
-	}
 }
 
 func TestLogReplicationMinorityAlive(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1*time.Second)
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -409,11 +405,13 @@ func TestLogReplicationMinorityAlive(t *testing.T) {
 		2: "localhost:50053",
 	}
 
-	nodes := make([]*raft.RaftNode, 3)
-	shutdowns := make([]chan struct{}, 3)
+	nodes := make([]*raft.RaftNode, len(peers))
+	shutdowns := make([]chan struct{}, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-	for i := range 3 {
+	for i := range len(peers) {
 		shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func(){ close(shutdowns[i]) })
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
 		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
 	}
@@ -439,7 +437,7 @@ func TestLogReplicationMinorityAlive(t *testing.T) {
 	// kill all followers
 	for i := range 3 {
 		if i != leaderID {
-			close(shutdowns[i])
+			shutdownOnce[i].Do(func(){ close(shutdowns[i]) })
 			nodes[i] = nil
 		}
 	}
@@ -472,10 +470,6 @@ func TestLogReplicationMinorityAlive(t *testing.T) {
 			t.Fatalf("FAILURE: node %d map not expected", i)
 		}
 	}
-
-	close(shutdowns[leaderID])
-
-	time.Sleep(1*time.Second)
 }
 
 func TestLogReplicationMultipleFollowerFailAndVariableRecover(t *testing.T) {
@@ -489,6 +483,7 @@ func TestLogReplicationMultipleFollowerFailAndVariableRecover(t *testing.T) {
 
 func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1*time.Second)
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -502,11 +497,13 @@ func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 		2: "localhost:50053",
 	}
 
-	nodes := make([]*raft.RaftNode, 3)
-	shutdowns := make([]chan struct{}, 3)
+	nodes := make([]*raft.RaftNode, len(peers))
+	shutdowns := make([]chan struct{}, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-	for i := range 3 {
+	for i := range len(peers) {
 		shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func(){ close(shutdowns[i]) })
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
 		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
 	}
@@ -541,7 +538,7 @@ func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 
 	// kill the current leader
 	fmt.Printf("Killing leader %d\n", originalLeaderID)
-	close(shutdowns[originalLeaderID])
+	shutdownOnce[originalLeaderID].Do(func(){ close(shutdowns[originalLeaderID]) })
 	nodes[originalLeaderID] = nil
 	time.Sleep(1 * time.Second) 
 
@@ -575,6 +572,7 @@ func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 
 	// restart original leader
 	shutdowns[originalLeaderID] = make(chan struct{})
+	defer close(shutdowns[originalLeaderID])
 	nodes[originalLeaderID] = raft.NewRaftNode(int32(originalLeaderID), peers, shutdowns[originalLeaderID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(originalLeaderID))))
 	go utils.ServeBackend(int32(originalLeaderID), peers, shutdowns[originalLeaderID], nodes[originalLeaderID])
 	fmt.Printf("Restarted original leader %d (now follower)\n", originalLeaderID)
@@ -617,18 +615,11 @@ func TestLogReplicationLeaderFailureThenRecovery(t *testing.T) {
 			t.Fatalf("FAILURE: node %d state machine not as expected. Got: %v, Expected: %v", i, sm, expectedState)
 		}
 	}
-
-	for i := range 3 {
-		if shutdowns[i] != nil {
-			close(shutdowns[i])
-		}
-	}
-	
-	time.Sleep(1*time.Second)
 }
 
 func TestLogReplicationLeaderFailureWithUncommittedThenRecovery(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1*time.Second)
 
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
 	os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -642,11 +633,13 @@ func TestLogReplicationLeaderFailureWithUncommittedThenRecovery(t *testing.T) {
 		2: "localhost:50053",
 	}
 
-	nodes := make([]*raft.RaftNode, 3)
-	shutdowns := make([]chan struct{}, 3)
+	nodes := make([]*raft.RaftNode, len(peers))
+	shutdowns := make([]chan struct{}, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-	for i := range 3 {
+	for i := range len(peers) {
 		shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func(){ close(shutdowns[i]) })
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
 		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
 	}
@@ -681,7 +674,7 @@ func TestLogReplicationLeaderFailureWithUncommittedThenRecovery(t *testing.T) {
 
 	// kill the current leader
 	fmt.Printf("Killing leader %d\n", originalLeaderID)
-	close(shutdowns[originalLeaderID])
+	shutdownOnce[originalLeaderID].Do(func(){ close(shutdowns[originalLeaderID]) })
 
 	// replace leaders PersistentState with uncommitted stuff
 	nodes[originalLeaderID].Logs = append(nodes[originalLeaderID].Logs, []raft.Log{{
@@ -700,10 +693,12 @@ func TestLogReplicationLeaderFailureWithUncommittedThenRecovery(t *testing.T) {
 
 	// persist it
 	nodes[originalLeaderID].WriteLogFile()
-
 	nodes[originalLeaderID] = nil
 
 	var newLeaderID int
+	newStatusChan := make(chan struct{})
+	defer close(newStatusChan)
+	statusUpdates = checkAllStatus(nodes, 100*time.Millisecond, newStatusChan)
 	if newLeaderID = waitForStableLeader(statusUpdates, 10*time.Second); newLeaderID == -1 {
 		t.Fatal("FAILURE: could not elect new leader within 10 seconds after leader failure")
 	}
@@ -733,6 +728,7 @@ func TestLogReplicationLeaderFailureWithUncommittedThenRecovery(t *testing.T) {
 
 	// restart former leader
 	shutdowns[originalLeaderID] = make(chan struct{})
+	defer close(shutdowns[originalLeaderID])
 	nodes[originalLeaderID] = raft.NewRaftNode(int32(originalLeaderID), peers, shutdowns[originalLeaderID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(originalLeaderID))))
 	go utils.ServeBackend(int32(originalLeaderID), peers, shutdowns[originalLeaderID], nodes[originalLeaderID])
 	fmt.Printf("Restarted original leader %d (now follower)\n", originalLeaderID)
@@ -775,18 +771,11 @@ func TestLogReplicationLeaderFailureWithUncommittedThenRecovery(t *testing.T) {
 			t.Fatalf("FAILURE: node %d state machine not as expected. Got: %v, Expected: %v", i, sm, expectedState)
 		}
 	}
-
-	for i := range 3 {
-		if shutdowns[i] != nil {
-			close(shutdowns[i])
-		}
-	}
-
-	time.Sleep(1*time.Second)
 }
 
 func TestLogReplicationAllNodesCrashAndRecover(t *testing.T) {
     fmt.Println("Running:", t.Name())
+	time.Sleep(1 * time.Second)
 
     os.Setenv("RAFT_HEARTBEAT_INTERVAL", "500")
     os.Setenv("RAFT_ELECTION_TIMEOUT_MIN", "1000")
@@ -800,11 +789,13 @@ func TestLogReplicationAllNodesCrashAndRecover(t *testing.T) {
         2: "localhost:50053",
     }
 
-    nodes := make([]*raft.RaftNode, 3)
-    shutdowns := make([]chan struct{}, 3)
+    nodes := make([]*raft.RaftNode, len(peers))
+    shutdowns := make([]chan struct{}, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-    for i := range 3 {
+    for i := range len(peers) {
         shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func(){ close(shutdowns[i]) })
         nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
         go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
     }
@@ -860,21 +851,26 @@ func TestLogReplicationAllNodesCrashAndRecover(t *testing.T) {
     }
 
     fmt.Println("Crashing all nodes...")
-    for i := range 3 {
-        close(shutdowns[i])
+    for i := range len(peers) {
+        shutdownOnce[i].Do(func(){ close(shutdowns[i]) })
         nodes[i] = nil
     }
     time.Sleep(2 * time.Second)
 
+	shutdownOnce = make([]sync.Once, len(peers))
+
     // now restart all nodes
     fmt.Println("Restarting all nodes...")
-    for i := range 3 {
+    for i := range len(peers) {
         shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func(){ close(shutdowns[i]) })
         nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
         go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
     }
 
-    statusUpdates = checkAllStatus(nodes, 100*time.Millisecond, statusChan)
+	restartStatusChan := make(chan struct{})
+	defer close(restartStatusChan)
+    statusUpdates = checkAllStatus(nodes, 100*time.Millisecond, restartStatusChan)
     if leaderID = waitForStableLeader(statusUpdates, 10*time.Second); leaderID == -1 {
         t.Fatal("FAILURE: could not achieve stable leadership after restart in 10 seconds")
     }
@@ -915,12 +911,6 @@ func TestLogReplicationAllNodesCrashAndRecover(t *testing.T) {
             t.Fatalf("Final state: node %d state machine not as expected\nGot: %v\nWant: %v", i, sm, expectedState)
         }
     }
-
-    for i := range 3 {
-        close(shutdowns[i])
-    }
-
-    time.Sleep(1 * time.Second)
 }
 
 func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numCrash, numRecover int) {
@@ -938,9 +928,11 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 
 	nodes := make([]*raft.RaftNode, numServers)
 	shutdowns := make([]chan struct{}, numServers)
+	shutdownOnce := make([]sync.Once, numServers)
 
 	for i := 0; i < numServers; i++ {
 		shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func(){ close(shutdowns[i]) })
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
 		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
 	}
@@ -967,7 +959,7 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 	crashed := 0
 	for i := 0; i < numServers && crashed < numCrash; i++ {
 		if i != leaderID {
-			close(shutdowns[i])
+			shutdownOnce[i].Do(func(){ close(shutdowns[i]) })
 			nodes[i] = nil
 			fmt.Printf("Killed follower %d\n", i)
 			crashed++
@@ -1001,6 +993,7 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 	for i := 0; i < numServers && recovered < numRecover; i++ {
 		if nodes[i] == nil && i != leaderID {
 			shutdowns[i] = make(chan struct{})
+			defer close(shutdowns[i])
 			nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
 			go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
 			fmt.Printf("Restarted follower %d\n", i)
@@ -1042,12 +1035,4 @@ func runLogReplicationFailuresPartialRecoveryTest(t *testing.T, numServers, numC
 			t.Fatalf("FAILURE: node %d map not expected", i)
 		}
 	}
-
-	for i := 0; i < numServers; i++ {
-		if nodes[i] != nil {
-			close(shutdowns[i])
-		}
-	}
 }
-
-

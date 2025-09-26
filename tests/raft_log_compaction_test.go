@@ -14,6 +14,7 @@ import (
 
 func TestLogCompactionFollowerRestartsButNotTooFarBehind(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1 * time.Second)
 
 	// set small compaction threshold for testing
 	os.Setenv("RAFT_COMPACTION_THRESHOLD", "5")
@@ -29,11 +30,13 @@ func TestLogCompactionFollowerRestartsButNotTooFarBehind(t *testing.T) {
 		2: "localhost:50053",
 	}
 
-	nodes := make([]*raft.RaftNode, 3)
-	shutdowns := make([]chan struct{}, 3)
+	nodes := make([]*raft.RaftNode, len(peers))
+	shutdowns := make([]chan struct{}, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-	for i := range 3 {
+	for i := range len(peers) {
 		shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func() { close(shutdowns[i]) })
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
 		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
 	}
@@ -104,7 +107,7 @@ func TestLogCompactionFollowerRestartsButNotTooFarBehind(t *testing.T) {
 	}
 
 	followerID := (leaderID + 1) % 3
-	close(shutdowns[followerID])
+	shutdownOnce[followerID].Do(func() { close(shutdowns[followerID]) })
 	nodes[followerID] = nil
 	time.Sleep(1 * time.Second)
 
@@ -114,6 +117,7 @@ func TestLogCompactionFollowerRestartsButNotTooFarBehind(t *testing.T) {
 	}
 
 	shutdowns[followerID] = make(chan struct{})
+	defer close(shutdowns[followerID])
 	nodes[followerID] = raft.NewRaftNode(int32(followerID), peers, shutdowns[followerID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(followerID))))
 	go utils.ServeBackend(int32(followerID), peers, shutdowns[followerID], nodes[followerID])
 
@@ -132,18 +136,11 @@ func TestLogCompactionFollowerRestartsButNotTooFarBehind(t *testing.T) {
 			t.Fatalf("Node %d final state not as expected\nGot: %v\nWant: %v", i, sm, expectedState)
 		}
 	}
-
-	for i := range 3 {
-		if shutdowns[i] != nil {
-			close(shutdowns[i])
-		}
-	}
-
-	time.Sleep(1 * time.Second)
 }
 
 func TestLogCompactionFollowerRestartsButAtLeastOneSnapshotBehind(t *testing.T) {
 	fmt.Println("Running:", t.Name())
+	time.Sleep(1 * time.Second)
 
 	// set small compaction threshold for testing
 	os.Setenv("RAFT_COMPACTION_THRESHOLD", "5")
@@ -159,11 +156,13 @@ func TestLogCompactionFollowerRestartsButAtLeastOneSnapshotBehind(t *testing.T) 
 		2: "localhost:50053",
 	}
 
-	nodes := make([]*raft.RaftNode, 3)
-	shutdowns := make([]chan struct{}, 3)
+	nodes := make([]*raft.RaftNode, len(peers))
+	shutdowns := make([]chan struct{}, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-	for i := range 3 {
+	for i := range len(peers) {
 		shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func() { close(shutdowns[i]) })
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
 		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
 	}
@@ -236,7 +235,7 @@ func TestLogCompactionFollowerRestartsButAtLeastOneSnapshotBehind(t *testing.T) 
 	}
 
 	followerID := (leaderID + 1) % 3
-	close(shutdowns[followerID])
+	shutdownOnce[followerID].Do(func() { close(shutdowns[followerID]) })
 	nodes[followerID] = nil
 	time.Sleep(1 * time.Second)
 
@@ -263,6 +262,7 @@ func TestLogCompactionFollowerRestartsButAtLeastOneSnapshotBehind(t *testing.T) 
 	}
 
 	shutdowns[followerID] = make(chan struct{})
+	defer close(shutdowns[followerID])
 	nodes[followerID] = raft.NewRaftNode(int32(followerID), peers, shutdowns[followerID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(followerID))))
 	go utils.ServeBackend(int32(followerID), peers, shutdowns[followerID], nodes[followerID])
 
@@ -286,18 +286,11 @@ func TestLogCompactionFollowerRestartsButAtLeastOneSnapshotBehind(t *testing.T) 
 			t.Fatalf("Node %d final state not as expected\nGot: %v\nWant: %v", i, sm, expectedState)
 		}
 	}
-
-	for i := range 3 {
-		if shutdowns[i] != nil {
-			close(shutdowns[i])
-		}
-	}
-
-	time.Sleep(1 * time.Second)
 }
 
 func TestLogCompactionFollowerJoinsAndMultipleSnapshotsBehind(t *testing.T) {
     fmt.Println("Running:", t.Name())
+	time.Sleep(1 * time.Second)
 
     os.Setenv("RAFT_COMPACTION_THRESHOLD", "5")
     os.Setenv("RAFT_HEARTBEAT_INTERVAL", "1000")
@@ -312,11 +305,13 @@ func TestLogCompactionFollowerJoinsAndMultipleSnapshotsBehind(t *testing.T) {
         2: "localhost:50053",
     }
 
-    nodes := make([]*raft.RaftNode, 3)
-    shutdowns := make([]chan struct{}, 3)
+    nodes := make([]*raft.RaftNode, len(peers))
+    shutdowns := make([]chan struct{}, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-    for i := range 3 {
+    for i := range len(peers) {
         shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func() { close(shutdowns[i]) })
         nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
         go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
     }
@@ -331,7 +326,7 @@ func TestLogCompactionFollowerJoinsAndMultipleSnapshotsBehind(t *testing.T) {
     }
 
     followerID := (leaderID + 1) % 3
-    close(shutdowns[followerID])
+    shutdownOnce[followerID].Do(func() { close(shutdowns[followerID]) })
     nodes[followerID] = nil
 
     batches := [][]struct {
@@ -394,6 +389,7 @@ func TestLogCompactionFollowerJoinsAndMultipleSnapshotsBehind(t *testing.T) {
     }
 
     shutdowns[followerID] = make(chan struct{})
+	defer close(shutdowns[followerID])
     nodes[followerID] = raft.NewRaftNode(int32(followerID), peers, shutdowns[followerID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(followerID))))
     go utils.ServeBackend(int32(followerID), peers, shutdowns[followerID], nodes[followerID])
 
@@ -428,18 +424,13 @@ func TestLogCompactionFollowerJoinsAndMultipleSnapshotsBehind(t *testing.T) {
             t.Fatalf("Node %d final state after last operation not as expected\nGot: %v\nWant: %v", i, sm, expectedState)
         }
     }
-
-    for i := range 3 {
-        if shutdowns[i] != nil {
-            close(shutdowns[i])
-        }
-    }
-
-    time.Sleep(1 * time.Second)
 }
 
 // follower loses all file logs and shutdown
 func TestLogCompactionFollowerLosesPersistentData(t *testing.T) {
+	fmt.Println("Running:", t.Name())
+	time.Sleep(1 * time.Second)
+
 	// set small compaction threshold for testing
 	os.Setenv("RAFT_COMPACTION_THRESHOLD", "5")
 	os.Setenv("RAFT_HEARTBEAT_INTERVAL", "1000")
@@ -454,11 +445,13 @@ func TestLogCompactionFollowerLosesPersistentData(t *testing.T) {
 		2: "localhost:50053",
 	}
 
-	nodes := make([]*raft.RaftNode, 3)
-	shutdowns := make([]chan struct{}, 3)
+	nodes := make([]*raft.RaftNode, len(peers))
+	shutdowns := make([]chan struct{}, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-	for i := range 3 {
+	for i := range len(peers) {
 		shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func() { close(shutdowns[i]) })
 		nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
 		go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
 	}
@@ -531,7 +524,7 @@ func TestLogCompactionFollowerLosesPersistentData(t *testing.T) {
 	}
 
 	followerID := (leaderID + 1) % 3
-	close(shutdowns[followerID])
+	shutdownOnce[followerID].Do(func() { close(shutdowns[followerID]) })
 
 	// delete the file for the follower
 	logPath := filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(followerID)))
@@ -569,7 +562,9 @@ func TestLogCompactionFollowerLosesPersistentData(t *testing.T) {
 
 	time.Sleep(3 * time.Second)
 
+	// restart the follower
 	shutdowns[followerID] = make(chan struct{})
+	defer close(shutdowns[followerID])
 	nodes[followerID] = raft.NewRaftNode(int32(followerID), peers, shutdowns[followerID], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(followerID))))
 	go utils.ServeBackend(int32(followerID), peers, shutdowns[followerID], nodes[followerID])
 
@@ -593,18 +588,11 @@ func TestLogCompactionFollowerLosesPersistentData(t *testing.T) {
 			t.Fatalf("Node %d final state not as expected\nGot: %v\nWant: %v", i, sm, expectedState)
 		}
 	}
-
-	for i := range 3 {
-		if shutdowns[i] != nil {
-			close(shutdowns[i])
-		}
-	}
-
-	time.Sleep(1 * time.Second)
 }
 
 func TestConcurrentCompactionAndInstallation(t *testing.T) {
     fmt.Println("Running:", t.Name())
+	time.Sleep(1*time.Second)
 
     os.Setenv("RAFT_COMPACTION_THRESHOLD", "5")
     os.Setenv("RAFT_HEARTBEAT_INTERVAL", "1000")
@@ -621,11 +609,13 @@ func TestConcurrentCompactionAndInstallation(t *testing.T) {
         4: "localhost:50055",
     }
 
-    nodes := make([]*raft.RaftNode, 5)
-    shutdowns := make([]chan struct{}, 5)
+    nodes := make([]*raft.RaftNode, len(peers))
+    shutdowns := make([]chan struct{}, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-    for i := range 5 {
+    for i := range len(peers) {
         shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func() { close(shutdowns[i]) })
         nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], 
             filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
         go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
@@ -646,7 +636,7 @@ func TestConcurrentCompactionAndInstallation(t *testing.T) {
     for i := 0; i < 5 && followerCount < 2; i++ {
         if i != leaderID {
             followerIDs = append(followerIDs, i)
-            close(shutdowns[i])
+            shutdownOnce[i].Do(func() { close(shutdowns[i]) })
             nodes[i] = nil
             followerCount++
         }
@@ -670,7 +660,7 @@ func TestConcurrentCompactionAndInstallation(t *testing.T) {
     // wait for some snapshots to be created
     time.Sleep(1 * time.Second)
 
-    // now we can restart all followers concurrently to test parallel snapshot installation
+    // now we can restart all stopped followers concurrently to test parallel snapshot installation
     var wg sync.WaitGroup
     for _, id := range followerIDs {
         wg.Add(1)
@@ -685,6 +675,10 @@ func TestConcurrentCompactionAndInstallation(t *testing.T) {
     }
 
     wg.Wait()
+
+	for _, id := range followerIDs { 
+		defer close(shutdowns[id]) // can't do this inside the goroutine
+	}
 
     for i := 20; i < 30; i++ {
         _, err := nodes[leaderID].ClientRequest(raft.Set, 
@@ -742,18 +736,11 @@ func TestConcurrentCompactionAndInstallation(t *testing.T) {
                 i, sm, expectedState)
         }
     }
-
-    for i := range 5 {
-        if shutdowns[i] != nil {
-            close(shutdowns[i])
-        }
-    }
-
-    time.Sleep(1 * time.Second)
 }
 
 func TestLogCompactionAfterLeaderFailure(t *testing.T) {
     fmt.Println("Running:", t.Name())
+	time.Sleep(1*time.Second)
 
     os.Setenv("RAFT_COMPACTION_THRESHOLD", "5")
     os.Setenv("RAFT_HEARTBEAT_INTERVAL", "1000")
@@ -768,11 +755,13 @@ func TestLogCompactionAfterLeaderFailure(t *testing.T) {
         2: "localhost:50053",
     }
 
-    nodes := make([]*raft.RaftNode, 3)
-    shutdowns := make([]chan struct{}, 3)
+    nodes := make([]*raft.RaftNode, len(peers))
+    shutdowns := make([]chan struct{}, len(peers))
+	shutdownOnce := make([]sync.Once, len(peers))
 
-    for i := range 3 {
+    for i := range len(peers) {
         shutdowns[i] = make(chan struct{})
+		defer shutdownOnce[i].Do(func(){ close(shutdowns[i]) })
         nodes[i] = raft.NewRaftNode(int32(i), peers, shutdowns[i], filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(i))))
         go utils.ServeBackend(int32(i), peers, shutdowns[i], nodes[i])
     }
@@ -834,10 +823,10 @@ func TestLogCompactionAfterLeaderFailure(t *testing.T) {
     }
 
 	// now kill leader here
-    close(shutdowns[originalLeaderID])
+    shutdownOnce[originalLeaderID].Do(func(){ close(shutdowns[originalLeaderID]) })
     nodes[originalLeaderID] = nil
 
-	// start status checking
+	// start new status checking
 	statusChan = make(chan struct{})
 	statusUpdates = checkAllStatus(nodes, 100*time.Millisecond, statusChan)
 
@@ -895,6 +884,7 @@ func TestLogCompactionAfterLeaderFailure(t *testing.T) {
     expectedState["key10"] = "value10"
 
     shutdowns[originalLeaderID] = make(chan struct{})
+	defer close(shutdowns[originalLeaderID])
     nodes[originalLeaderID] = raft.NewRaftNode(int32(originalLeaderID), peers, shutdowns[originalLeaderID], 
         filepath.Join("test_logs", fmt.Sprintf("raft_node_%d", int32(originalLeaderID))))
     go utils.ServeBackend(int32(originalLeaderID), peers, shutdowns[originalLeaderID], nodes[originalLeaderID])
@@ -922,12 +912,4 @@ func TestLogCompactionAfterLeaderFailure(t *testing.T) {
         }
         node.Mu.Unlock()
     }
-
-    for i := range 3 {
-        if shutdowns[i] != nil {
-            close(shutdowns[i])
-        }
-    }
-
-    time.Sleep(1 * time.Second)
 }
